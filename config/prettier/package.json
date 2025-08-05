@@ -1,0 +1,13 @@
+{
+  "name": "@rusty-butter/prettier-config",
+  "version": "0.1.0",
+  "description": "Shared Prettier configuration for Rusty Butter workspace",
+  "main": "index.js",
+  "files": [
+    "*.js",
+    "*.json"
+  ],
+  "devDependencies": {
+    "prettier": "^3.0.0"
+  }
+}

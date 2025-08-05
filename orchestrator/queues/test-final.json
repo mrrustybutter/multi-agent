@@ -1,0 +1,21 @@
+{
+  "id": "test-claude-final",
+  "timestamp": "2025-08-05T18:58:00.000Z",
+  "source": "dashboard",
+  "priority": "high",
+  "action": {
+    "type": "respond",
+    "content": "Testing with stdin.end() fix! Please respond.",
+    "data": {
+      "message": "Testing with stdin.end() fix! Please respond.",
+      "user": "RustyButter",
+      "isDashboardPriority": true
+    }
+  },
+  "context": {
+    "platform": "dashboard",
+    "requires_response": true,
+    "priority_user": true
+  },
+  "ttl": 300
+}

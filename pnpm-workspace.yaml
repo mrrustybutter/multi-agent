@@ -1,0 +1,7 @@
+packages:
+  - 'packages/*'
+  - 'monitors/*'
+  - 'orchestrator'
+  - 'shared'
+  - 'tools/*'
+  - 'config/*'

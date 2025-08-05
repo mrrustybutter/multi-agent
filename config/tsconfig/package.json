@@ -1,0 +1,13 @@
+{
+  "name": "@rusty-butter/tsconfig",
+  "version": "0.1.0",
+  "description": "Shared TypeScript configuration for Rusty Butter workspace",
+  "main": "index.json",
+  "files": [
+    "*.json"
+  ],
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "typescript": "^5.3.3"
+  }
+}
