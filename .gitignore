@@ -18,8 +18,9 @@ pids/
 *.seed
 *.pid.lock
 
-# Queue files
-queues/*.json
+# Queue files (temporary)
+orchestrator/queues/*.json
+!orchestrator/queues/.gitkeep
 
 # Environment
 .env

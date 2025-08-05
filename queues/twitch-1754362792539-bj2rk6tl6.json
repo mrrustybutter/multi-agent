@@ -1,0 +1,22 @@
+{
+  "id": "twitch-d97cf3a4-e8df-44bc-a38f-e54d858975ca",
+  "source": "twitch-chat",
+  "priority": 2,
+  "timestamp": "2025-08-05T02:59:52.539Z",
+  "context": {
+    "channel": "codingbutter",
+    "user": "versonityy",
+    "displayName": "versonityy",
+    "message": "how ya doing?",
+    "subscriber": false,
+    "mod": false
+  },
+  "action": {
+    "type": "respond",
+    "content": "Respond to Twitch chat from versonityy: \"how ya doing?\"",
+    "data": {
+      "channelId": "codingbutter",
+      "replyTo": "d97cf3a4-e8df-44bc-a38f-e54d858975ca"
+    }
+  }
+}
