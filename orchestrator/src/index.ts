@@ -80,12 +80,12 @@ const config: OrchestratorConfig = {
     {
       name: 'rustybutter-avatar',
       command: 'node',
-      args: ['/home/codingbutter/GitHub/rusty-butter/packages/rustybutter-avatar/packages/mcp-server/dist/index.js']
+      args: [path.join(os.homedir(), 'GitHub/rusty-butter/packages/rustybutter-avatar/packages/mcp-server/dist/index.js')]
     },
     {
       name: 'elevenlabs',
       command: 'node',
-      args: ['/home/codingbutter/GitHub/rusty-butter/packages/elevenlabs-streaming/packages/mcp-server/dist/index.js'],
+      args: [path.join(os.homedir(), 'GitHub/rusty-butter/packages/elevenlabs-streaming/packages/mcp-server/dist/index.js')],
       env: {
         ELEVEN_API_KEY: process.env.ELEVEN_API_KEY || ''
       }
