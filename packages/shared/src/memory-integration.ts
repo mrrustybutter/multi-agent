@@ -28,8 +28,12 @@ export async function initializeMemory(): Promise<MemoryClient> {
     logger.info('Connecting to semantic memory MCP server...');
     
     memoryTransport = new StdioClientTransport({
-      command: 'npx',
-      args: ['-y', '@modelcontextprotocol/server-memory']
+      command: 'node',
+      args: [`${process.cwd()}/tools/semantic-memory/dist/index.js`],
+      env: {
+        ...process.env,
+        SEMANTIC_MEMORY_DB_PATH: `${process.cwd()}/semantic_memory_banks`
+      }
     });
 
     memoryClient = new Client({

@@ -24,35 +24,68 @@ export default function QueueViewer() {
   const socket = useSocket()
 
   useEffect(() => {
-    if (!socket) return
-
-    socket.on('queue:update', (data: { action: QueueItem[], performance: QueueItem[] }) => {
-      setActionQueue(data.action)
-      setPerformanceQueue(data.performance)
-    })
-
-    // Request initial queue state
-    socket.emit('queue:request')
-
-    const interval = setInterval(() => {
-      socket.emit('queue:request')
-    }, 5000) // Refresh every 5 seconds
-
-    return () => {
-      socket.off('queue:update')
-      clearInterval(interval)
+    // Fetch queue information directly from orchestrator API
+    const fetchQueueInfo = async () => {
+      try {
+        const response = await fetch('http://localhost:8742/status')
+        const status = await response.json()
+        
+        // Create mock queue items based on orchestrator status
+        const mockActionQueue: QueueItem[] = status.queueSize > 0 ? [{
+          id: 'queue-item-1',
+          source: 'orchestrator',
+          priority: 'medium',
+          action: {
+            type: 'process_events',
+            content: `Processing ${status.queueSize} queued events`,
+            data: { queueSize: status.queueSize }
+          },
+          timestamp: new Date().toISOString(),
+          ttl: 300,
+          position: 1
+        }] : []
+        
+        const mockPerformanceQueue: QueueItem[] = status.voiceQueueSize > 0 ? [{
+          id: 'voice-queue-1',
+          source: 'voice-processor',
+          priority: 'high',
+          action: {
+            type: 'voice_synthesis',
+            content: `Processing ${status.voiceQueueSize} voice synthesis requests`,
+            data: { voiceQueueSize: status.voiceQueueSize }
+          },
+          timestamp: new Date().toISOString(),
+          ttl: 180,
+          position: 1
+        }] : []
+        
+        setActionQueue(mockActionQueue)
+        setPerformanceQueue(mockPerformanceQueue)
+      } catch (error) {
+        console.error('Failed to fetch queue info:', error)
+        setActionQueue([])
+        setPerformanceQueue([])
+      }
     }
-  }, [socket])
+    
+    // Initial fetch
+    fetchQueueInfo()
+    
+    // Poll every 5 seconds
+    const interval = setInterval(fetchQueueInfo, 5000)
+    
+    return () => clearInterval(interval)
+  }, [])
 
   const currentQueue = selectedQueue === 'action' ? actionQueue : performanceQueue
 
   const getPriorityColor = (priority: string) => {
     switch (priority) {
-      case 'critical': return 'bg-red-600 text-red-100'
-      case 'high': return 'bg-orange-600 text-orange-100'
-      case 'medium': return 'bg-yellow-600 text-yellow-100'
-      case 'low': return 'bg-gray-600 text-gray-100'
-      default: return 'bg-gray-600 text-gray-100'
+      case 'critical': return 'bg-[#f85149] text-white'
+      case 'high': return 'bg-[#fb8500] text-white'
+      case 'medium': return 'bg-[#d29922] text-white'
+      case 'low': return 'bg-[#30363d] text-[#7d8590]'
+      default: return 'bg-[#30363d] text-[#7d8590]'
     }
   }
 
@@ -70,24 +103,24 @@ export default function QueueViewer() {
 
   return (
     <div>
-      <div className="mb-4">
-        <div className="flex space-x-4 mb-4">
+      <div className="mb-3">
+        <div className="inline-flex rounded-md bg-[#0d1117] border border-[#30363d] p-1">
           <button
             onClick={() => setSelectedQueue('action')}
-            className={`px-4 py-2 rounded-lg font-medium transition-colors ${
+            className={`px-3 py-1.5 rounded text-xs font-medium transition-colors ${
               selectedQueue === 'action'
-                ? 'bg-orange-600 text-white'
-                : 'bg-gray-800 text-gray-400 hover:text-white'
+                ? 'bg-[#0969da] text-white'
+                : 'text-[#7d8590] hover:text-[#e6edf3]'
             }`}
           >
             Action Queue ({actionQueue.length})
           </button>
           <button
             onClick={() => setSelectedQueue('performance')}
-            className={`px-4 py-2 rounded-lg font-medium transition-colors ${
+            className={`px-3 py-1.5 rounded text-xs font-medium transition-colors ${
               selectedQueue === 'performance'
-                ? 'bg-orange-600 text-white'
-                : 'bg-gray-800 text-gray-400 hover:text-white'
+                ? 'bg-[#0969da] text-white'
+                : 'text-[#7d8590] hover:text-[#e6edf3]'
             }`}
           >
             Performance Queue ({performanceQueue.length})
@@ -95,45 +128,45 @@ export default function QueueViewer() {
         </div>
       </div>
 
-      <div className="space-y-3 max-h-[500px] overflow-y-auto">
+      <div className="space-y-2 max-h-[450px] overflow-y-auto scrollbar-github">
         {currentQueue.length === 0 ? (
-          <div className="text-center py-8 text-gray-500">
+          <div className="text-center py-8 text-[#7d8590] text-sm">
             Queue is empty
           </div>
         ) : (
           currentQueue.map((item, index) => (
             <div
               key={item.id}
-              className="bg-gray-800 rounded-lg p-4 border border-gray-700"
+              className="bg-[#0d1117] border border-[#30363d] rounded-md p-3"
             >
               <div className="flex items-start justify-between mb-2">
-                <div className="flex items-center space-x-3">
-                  <span className="text-2xl font-bold text-gray-500">#{index + 1}</span>
-                  <div>
-                    <div className="flex items-center space-x-2">
-                      <span className="font-medium">{item.action.type}</span>
-                      <span className={`px-2 py-0.5 text-xs rounded ${getPriorityColor(item.priority)}`}>
-                        {item.priority}
+                <div className="flex items-start gap-3">
+                  <span className="text-lg font-bold text-[#30363d] select-none">#{index + 1}</span>
+                  <div className="flex-1">
+                    <div className="flex items-center gap-2 mb-1">
+                      <span className="font-medium text-sm text-[#e6edf3]">{item.action.type}</span>
+                      <span className={`px-1.5 py-0.5 text-[10px] rounded-md font-medium ${getPriorityColor(item.priority)}`}>
+                        {item.priority.toUpperCase()}
                       </span>
                     </div>
-                    <div className="text-xs text-gray-400 mt-1">
-                      From: {item.source} • ID: {item.id}
+                    <div className="text-[11px] text-[#7d8590]">
+                      {item.source} • {item.id}
                     </div>
                   </div>
                 </div>
-                <div className="text-sm text-gray-400">
-                  TTL: {getRemainingTime(item.timestamp, item.ttl)}
+                <div className="text-xs text-[#7d8590]">
+                  TTL: <span className="text-[#e6edf3]">{getRemainingTime(item.timestamp, item.ttl)}</span>
                 </div>
               </div>
 
               <div className="mt-2">
-                <p className="text-sm text-gray-300">{item.action.content}</p>
+                <p className="text-xs text-[#7d8590]">{item.action.content}</p>
                 {item.action.data && (
-                  <details className="mt-2">
-                    <summary className="text-xs text-gray-500 cursor-pointer hover:text-gray-300">
+                  <details className="mt-2 group">
+                    <summary className="text-[11px] text-[#7d8590] cursor-pointer hover:text-[#58a6ff] select-none">
                       View Data
                     </summary>
-                    <pre className="mt-2 text-xs text-gray-400 bg-gray-900 p-2 rounded overflow-x-auto">
+                    <pre className="mt-2 text-[11px] text-[#7d8590] bg-[#161b22] border border-[#30363d] p-2 rounded-md overflow-x-auto">
                       {JSON.stringify(item.action.data, null, 2)}
                     </pre>
                   </details>

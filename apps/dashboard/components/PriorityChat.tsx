@@ -38,10 +38,10 @@ export default function PriorityChat() {
     }
   }, [socket])
 
-  const sendMessage = () => {
-    if (!input.trim() || !socket) return
+  const sendMessage = async () => {
+    if (!input.trim()) return
 
-    const message: Message = {
+    const userMessage: Message = {
       id: Date.now().toString(),
       text: input,
       sender: 'user',
@@ -49,75 +49,118 @@ export default function PriorityChat() {
       priority
     }
 
-    socket.emit('chat:send', {
-      text: input,
-      priority,
-      source: 'dashboard',
-      user: 'CodingButter'
-    })
-
-    setMessages(prev => [...prev, message])
+    // Add user message immediately
+    setMessages(prev => [...prev, userMessage])
+    const messageText = input
     setInput('')
+
+    try {
+      // Send directly to orchestrator API
+      const response = await fetch('http://localhost:8742/event', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          source: 'dashboard',
+          type: 'chat_message',
+          priority: priority === 'critical' ? 'critical' : priority === 'high' ? 'high' : 'medium',
+          data: {
+            message: messageText,
+            user: 'CodingButter',
+            isDashboardPriority: true
+          }
+        })
+      })
+      
+      if (response.ok) {
+        const result = await response.json()
+        
+        // Add confirmation message
+        const confirmMessage: Message = {
+          id: (Date.now() + 1).toString(),
+          text: `✓ Message sent to orchestrator (Event ID: ${result.eventId})`,
+          sender: 'rusty',
+          timestamp: new Date()
+        }
+        setMessages(prev => [...prev, confirmMessage])
+      } else {
+        throw new Error(`HTTP ${response.status}`)
+      }
+    } catch (error) {
+      console.error('Failed to send message:', error)
+      const errorMessage: Message = {
+        id: (Date.now() + 1).toString(),
+        text: '❌ Failed to send message to orchestrator',
+        sender: 'rusty',
+        timestamp: new Date()
+      }
+      setMessages(prev => [...prev, errorMessage])
+    }
   }
 
   return (
-    <div className="flex flex-col h-[600px]">
-      <div className="flex-1 overflow-y-auto space-y-4 mb-4">
+    <div className="flex flex-col h-[550px]">
+      <div className="flex-1 overflow-y-auto scrollbar-github space-y-3 mb-4 p-1">
+        {messages.length === 0 && (
+          <div className="text-center py-8">
+            <p className="text-sm text-[#7d8590]">Send a priority message to the orchestrator</p>
+          </div>
+        )}
         {messages.map((message) => (
           <div
             key={message.id}
             className={`flex ${message.sender === 'user' ? 'justify-end' : 'justify-start'}`}
           >
             <div
-              className={`max-w-[70%] rounded-lg p-3 ${
+              className={`max-w-[80%] rounded-md px-3 py-2 ${
                 message.sender === 'user'
-                  ? 'bg-orange-600 text-white'
-                  : 'bg-gray-800 text-gray-100'
+                  ? 'bg-[#0969da] text-white'
+                  : 'bg-[#21262d] border border-[#30363d] text-[#e6edf3]'
               }`}
             >
               {message.priority && message.sender === 'user' && (
-                <span className={`text-xs font-semibold mb-1 block ${
-                  message.priority === 'critical' ? 'text-red-300' :
-                  message.priority === 'high' ? 'text-yellow-300' : 'text-gray-300'
+                <span className={`inline-block px-1.5 py-0.5 text-xs font-medium rounded mb-1 ${
+                  message.priority === 'critical' ? 'bg-[#da3633] text-white' :
+                  message.priority === 'high' ? 'bg-[#fb8500] text-white' : 'bg-[#656d76] text-white'
                 }`}>
-                  [{message.priority.toUpperCase()}]
+                  {message.priority.toUpperCase()}
                 </span>
               )}
-              <p className="text-sm">{message.text}</p>
-              <span className="text-xs opacity-60 mt-1 block">
+              <p className="text-sm leading-5">{message.text}</p>
+              <div className="text-xs opacity-70 mt-1">
                 {new Date(message.timestamp).toLocaleTimeString()}
-              </span>
+              </div>
             </div>
           </div>
         ))}
         <div ref={messagesEndRef} />
       </div>
 
-      <div className="border-t border-gray-800 pt-4">
-        <div className="flex items-center space-x-2 mb-2">
-          <label className="text-sm text-gray-400">Priority:</label>
+      <div className="border-t border-[#30363d] pt-4 space-y-3">
+        <div className="flex items-center gap-3">
+          <label className="text-xs text-[#7d8590] font-medium">Priority:</label>
           <select
             value={priority}
             onChange={(e) => setPriority(e.target.value as any)}
-            className="bg-gray-800 text-sm rounded px-2 py-1 focus:outline-none focus:ring-2 focus:ring-orange-500"
+            className="bg-[#21262d] border border-[#30363d] text-sm rounded-md px-2 py-1 text-[#e6edf3] focus:outline-none focus:ring-2 focus:ring-[#0969da] focus:border-transparent"
           >
             <option value="normal">Normal</option>
             <option value="high">High</option>
             <option value="critical">Critical</option>
           </select>
         </div>
-        <div className="flex space-x-2">
+        <div className="flex gap-2">
           <input
             type="text"
             value={input}
             onChange={(e) => setInput(e.target.value)}
             onKeyPress={(e) => e.key === 'Enter' && sendMessage()}
-            placeholder="Type your message..."
-            className="flex-1 bg-gray-800 rounded-lg px-4 py-2 focus:outline-none focus:ring-2 focus:ring-orange-500"
+            placeholder="Send a message to the orchestrator..."
+            className="flex-1 bg-[#0d1117] border border-[#30363d] rounded-md px-3 py-2 text-sm text-[#e6edf3] placeholder-[#7d8590] focus:outline-none focus:ring-2 focus:ring-[#0969da] focus:border-transparent"
           />
           <button
             onClick={sendMessage}
-            className="bg-orange-600 hover:bg-orange-700 px-6 py-2 rounded-lg font-medium transition-colors"
+            disabled={!input.trim()}
+            className="bg-[#238636] hover:bg-[#2ea043] disabled:bg-[#21262d] disabled:text-[#656d76] px-4 py-2 rounded-md text-sm font-medium text-white transition-colors disabled:cursor-not-allowed"
           >
             Send
           </button>

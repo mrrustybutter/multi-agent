@@ -16,6 +16,7 @@ import { joinVoiceChannel, VoiceConnection } from '@discordjs/voice';
 import { spawn } from 'child_process';
 import { EventEmitter } from 'events';
 import winston from 'winston';
+import { getMonitorConfig, watchConfig } from '@rusty-butter/shared';
 
 // Logger setup
 const logger = winston.createLogger({
@@ -56,10 +57,10 @@ interface BotConfig {
   minMessageLength: number;
 }
 
-// Configuration
-const config: BotConfig = {
-  token: process.env.DISCORD_TOKEN || '',
-  defaultGuild: process.env.DISCORD_GUILD,
+// Configuration - will be populated from MongoDB or env
+let config: BotConfig = {
+  token: '',
+  defaultGuild: undefined,
   messageHistoryLimit: 100,
   spawnCooldown: 2000,
   minMessageLength: 3
@@ -623,9 +624,30 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 async function main() {
   logger.info('Starting Discord Monitor (Bot + MCP Server)...');
   
-  if (!config.token) {
-    throw new Error('DISCORD_TOKEN environment variable required');
+  // Load configuration from MongoDB or fallback to env
+  logger.info('Loading configuration...');
+  const monitorConfig = await getMonitorConfig();
+  
+  if (!monitorConfig.discord?.token) {
+    logger.error('Discord token not found in configuration or environment');
+    throw new Error('Discord token required - check MongoDB config or DISCORD_TOKEN env var');
   }
+  
+  // Update config with values from MongoDB
+  config.token = monitorConfig.discord.token;
+  config.defaultGuild = monitorConfig.discord.guildId || config.defaultGuild;
+  
+  logger.info(`Discord config loaded - Guild: ${config.defaultGuild || 'not set'}`);
+  
+  // Watch for config changes
+  watchConfig((newConfig) => {
+    if (newConfig.discord?.token && newConfig.discord.token !== config.token) {
+      logger.info('Discord token changed, reconnecting...');
+      config.token = newConfig.discord.token;
+      config.defaultGuild = newConfig.discord.guildId || config.defaultGuild;
+      // TODO: Reconnect Discord client with new token
+    }
+  });
   
   // Connect to Discord
   await connectToDiscord();

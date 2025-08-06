@@ -18,6 +18,7 @@ import { createLogger } from '@rusty-butter/logger';
 import { writeFileSync } from 'fs';
 import { join } from 'path';
 import { initializeMemory, recallMonitorState, storeMonitorState, type MemoryClient } from '@rusty-butter/shared/memory-integration';
+import { getMonitorConfig, watchConfig } from '@rusty-butter/shared';
 
 // Logger setup
 const logger = createLogger('twitch-monitor');
@@ -43,11 +44,11 @@ interface BotConfig {
   minMessageLength: number;
 }
 
-// Configuration
-const config: BotConfig = {
-  channel: process.env.TWITCH_CHANNEL || 'mrrustybutter',
-  username: process.env.TWITCH_USERNAME,
-  oauth: process.env.TWITCH_OAUTH,
+// Configuration - will be populated from MongoDB or env
+let config: BotConfig = {
+  channel: 'mrrustybutter',
+  username: undefined,
+  oauth: undefined,
   messageHistoryLimit: 100,
   spawnCooldown: 2000, // 2 seconds between Claude spawns
   minMessageLength: 3
@@ -409,6 +410,39 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 // Main startup
 async function main() {
   logger.info('Starting Twitch Monitor (Bot + MCP Server)...');
+  
+  // Load configuration from MongoDB or fallback to env
+  logger.info('Loading configuration...');
+  const monitorConfig = await getMonitorConfig();
+  
+  if (monitorConfig.twitch) {
+    config.channel = monitorConfig.twitch.channel || config.channel;
+    config.username = monitorConfig.twitch.username;
+    config.oauth = monitorConfig.twitch.oauth;
+    logger.info(`Twitch config loaded - Channel: ${config.channel}, Username: ${config.username || 'not set'}`);
+  } else {
+    logger.warn('No Twitch config found in MongoDB, using environment variables');
+    config.username = process.env.TWITCH_USERNAME;
+    config.oauth = process.env.TWITCH_OAUTH;
+    config.channel = process.env.TWITCH_CHANNEL || config.channel;
+  }
+  
+  // Watch for config changes
+  watchConfig((newConfig) => {
+    if (newConfig.twitch) {
+      const changed = newConfig.twitch.oauth !== config.oauth || 
+                     newConfig.twitch.username !== config.username ||
+                     newConfig.twitch.channel !== config.channel;
+      
+      if (changed) {
+        logger.info('Twitch config changed, reconnecting...');
+        config.channel = newConfig.twitch.channel || config.channel;
+        config.username = newConfig.twitch.username;
+        config.oauth = newConfig.twitch.oauth;
+        // TODO: Reconnect Twitch client with new credentials
+      }
+    }
+  });
   
   // Check for semantic memory MCP connection
   try {

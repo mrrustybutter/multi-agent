@@ -12,6 +12,7 @@
     "lint": "eslint src --ext .ts"
   },
   "dependencies": {
+    "@elevenlabs/elevenlabs-js": "^2.8.0",
     "@modelcontextprotocol/sdk": "^1.17.0",
     "@rusty-butter/logger": "workspace:*",
     "@rusty-butter/shared": "workspace:*",
@@ -20,6 +21,7 @@
     "cors": "^2.8.5",
     "eventemitter3": "^5.0.1",
     "express": "^4.21.2",
+    "express-rate-limit": "^8.0.1",
     "p-queue": "^8.0.1"
   },
   "devDependencies": {

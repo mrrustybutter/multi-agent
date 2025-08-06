@@ -3,8 +3,9 @@ const path = require('path');
 module.exports = {
   apps: [
     // Core Services (start first)
+    // OpenAI Proxy
     {
-      name: 'claude-proxy',
+      name: 'proxy-openai',
       script: 'pnpm',
       args: '--filter @rusty-butter/claude-code-proxy dev',
       cwd: __dirname,
@@ -14,11 +15,55 @@ module.exports = {
       max_memory_restart: '200M',
       env: {
         NODE_ENV: 'production',
-        CLAUDE_PROXY_PORT: process.env.CLAUDE_PROXY_PORT || '8743'
+        PORT: '8744',
+        PROVIDER: 'openai',
+        OPENAI_API_KEY: process.env.OPENAI_API_KEY
       },
-      error_file: './logs/claude-proxy-error.log',
-      out_file: './logs/claude-proxy-out.log',
-      log_file: './logs/claude-proxy-combined.log',
+      error_file: './logs/proxy-openai-error.log',
+      out_file: './logs/proxy-openai-out.log',
+      log_file: './logs/proxy-openai-combined.log',
+      time: true
+    },
+    // Gemini Proxy
+    {
+      name: 'proxy-gemini',
+      script: 'pnpm',
+      args: '--filter @rusty-butter/claude-code-proxy dev',
+      cwd: __dirname,
+      instances: 1,
+      autorestart: true,
+      watch: false,
+      max_memory_restart: '200M',
+      env: {
+        NODE_ENV: 'production',
+        PORT: '8745',
+        PROVIDER: 'gemini',
+        GEMINI_API_KEY: process.env.GEMINI_API_KEY
+      },
+      error_file: './logs/proxy-gemini-error.log',
+      out_file: './logs/proxy-gemini-out.log',
+      log_file: './logs/proxy-gemini-combined.log',
+      time: true
+    },
+    // Grok Proxy
+    {
+      name: 'proxy-grok',
+      script: 'pnpm',
+      args: '--filter @rusty-butter/claude-code-proxy dev',
+      cwd: __dirname,
+      instances: 1,
+      autorestart: true,
+      watch: false,
+      max_memory_restart: '200M',
+      env: {
+        NODE_ENV: 'production',
+        PORT: '8746',
+        PROVIDER: 'grok',
+        GROK_API_KEY: process.env.GROK_API_KEY
+      },
+      error_file: './logs/proxy-grok-error.log',
+      out_file: './logs/proxy-grok-out.log',
+      log_file: './logs/proxy-grok-combined.log',
       time: true
     },
     {
@@ -212,6 +257,26 @@ module.exports = {
       log_file: './logs/elevenlabs-combined.log',
       time: true
     },
+    {
+      name: 'semantic-memory',
+      script: 'node',
+      args: path.join(__dirname, 'tools/semantic-memory/dist/mcp-sse-server.js'),
+      cwd: __dirname,
+      instances: 1,
+      autorestart: true,
+      watch: false,
+      max_memory_restart: '300M',
+      env: {
+        NODE_ENV: 'production',
+        SEMANTIC_MEMORY_PORT: '8750',
+        SEMANTIC_MEMORY_DB_PATH: path.join(__dirname, 'semantic_memory_banks'),
+        OPENAI_API_KEY: process.env.OPENAI_API_KEY
+      },
+      error_file: './logs/semantic-memory-error.log',
+      out_file: './logs/semantic-memory-out.log',
+      log_file: './logs/semantic-memory-combined.log',
+      time: true
+    },
     
     // Orchestrator (starts after all services are ready)
     {
@@ -227,8 +292,13 @@ module.exports = {
         NODE_ENV: 'production',
         QUEUE_DIR: path.join(__dirname, 'queues'),
         LOG_DIR: path.join(__dirname, 'logs'),
+        ANTHROPIC_API_KEY: process.env.ANTHROPIC_API_KEY,
         ELEVEN_API_KEY: process.env.ELEVEN_API_KEY,
-        DISCORD_TOKEN: process.env.DISCORD_TOKEN
+        DISCORD_TOKEN: process.env.DISCORD_TOKEN,
+        OPENAI_API_KEY: process.env.OPENAI_API_KEY,
+        GEMINI_API_KEY: process.env.GEMINI_API_KEY,
+        GROK_API_KEY: process.env.GROK_API_KEY,
+        GROQ_API_KEY: process.env.GROQ_API_KEY
       },
       error_file: './logs/orchestrator-error.log',
       out_file: './logs/orchestrator-out.log', 

@@ -25,6 +25,10 @@
     "./health-monitor": {
       "import": "./dist/health-monitor.js",
       "types": "./dist/health-monitor.d.ts"
+    },
+    "./config-client": {
+      "import": "./dist/config-client.js",
+      "types": "./dist/config-client.d.ts"
     }
   },
   "scripts": {
@@ -33,9 +37,13 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
+    "@elevenlabs/elevenlabs-js": "^2.8.0",
+    "@google/generative-ai": "^0.2.1",
     "@modelcontextprotocol/sdk": "^1.17.0",
     "@rusty-butter/logger": "workspace:*",
     "chokidar": "^3.5.3",
+    "mongoose": "^8.17.0",
+    "openai": "^4.28.4",
     "uuid": "^9.0.1",
     "winston": "^3.11.0"
   },

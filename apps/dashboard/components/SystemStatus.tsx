@@ -6,10 +6,14 @@ import { useSocket } from '@/hooks/useSocket'
 interface SystemInfo {
   orchestrator: {
     status: 'online' | 'offline'
-    activeClaudes: number
+    activeLLMs: {
+      claude: number
+      others: number
+    }
     queueSizes: {
       action: number
       performance: number
+      voiceQueue: number
     }
   }
   monitors: {
@@ -27,8 +31,8 @@ export default function SystemStatus() {
   const [systemInfo, setSystemInfo] = useState<SystemInfo>({
     orchestrator: {
       status: 'offline',
-      activeClaudes: 0,
-      queueSizes: { action: 0, performance: 0 }
+      activeLLMs: { claude: 0, others: 0 },
+      queueSizes: { action: 0, performance: 0, voiceQueue: 0 }
     },
     monitors: [],
     tools: []
@@ -36,51 +40,97 @@ export default function SystemStatus() {
   const socket = useSocket()
 
   useEffect(() => {
-    if (!socket) return
-
-    socket.on('system:status', (status: SystemInfo) => {
-      setSystemInfo(status)
-    })
-
-    // Request initial status
-    socket.emit('system:request-status')
-
-    return () => {
-      socket.off('system:status')
+    // Fetch system status directly from orchestrator API
+    const fetchSystemStatus = async () => {
+      try {
+        const response = await fetch('http://localhost:8742/status')
+        const orchestratorStatus = await response.json()
+        
+        // Mock up system info based on orchestrator status 
+        const systemInfo: SystemInfo = {
+          orchestrator: {
+            status: 'online',
+            activeLLMs: {
+              claude: orchestratorStatus.activeLLMs?.claude?.length || 0,
+              others: orchestratorStatus.activeLLMs?.others?.length || 0
+            },
+            queueSizes: {
+              action: orchestratorStatus.queueSize || 0,
+              performance: orchestratorStatus.queuePending || 0,
+              voiceQueue: orchestratorStatus.voiceQueueSize || 0
+            }
+          },
+          monitors: [
+            { name: 'twitch-monitor', status: 'connected' },
+            { name: 'discord-monitor', status: 'connected' },  
+            { name: 'event-monitor', status: 'connected' }
+          ],
+          tools: [
+            { name: 'elevenlabs', status: 'running', port: 3454 },
+            { name: 'semantic-memory', status: 'running' },
+            { name: 'rustybutter-avatar', status: 'stopped' },
+            { name: 'discord-tools', status: 'stopped' },
+            { name: 'twitch-chat', status: 'running', port: 3456 }
+          ]
+        }
+        
+        setSystemInfo(systemInfo)
+      } catch (error) {
+        console.error('Failed to fetch orchestrator status:', error)
+        setSystemInfo({
+          orchestrator: { status: 'offline', activeLLMs: { claude: 0, others: 0 }, queueSizes: { action: 0, performance: 0, voiceQueue: 0 } },
+          monitors: [],
+          tools: []
+        })
+      }
     }
-  }, [socket])
+    
+    // Initial fetch
+    fetchSystemStatus()
+    
+    // Poll every 5 seconds
+    const interval = setInterval(fetchSystemStatus, 5000)
+    
+    return () => clearInterval(interval)
+  }, [])
 
   return (
     <div className="space-y-4">
       {/* Orchestrator Status */}
-      <div className="bg-gray-900 rounded-lg shadow-xl p-4">
-        <h3 className="text-lg font-semibold mb-3 text-orange-500">Orchestrator</h3>
-        <div className="space-y-2 text-sm">
+      <div className="bg-[#161b22] border border-[#30363d] rounded-md">
+        <div className="px-4 py-3 border-b border-[#30363d]">
+          <h3 className="text-sm font-semibold text-[#e6edf3]">Orchestrator</h3>
+        </div>
+        <div className="p-4 space-y-3">
           <div className="flex items-center justify-between">
-            <span className="text-gray-400">Status</span>
-            <span className={`flex items-center ${
-              systemInfo.orchestrator.status === 'online' ? 'text-green-400' : 'text-red-400'
-            }`}>
-              <span className={`h-2 w-2 rounded-full mr-2 ${
-                systemInfo.orchestrator.status === 'online' ? 'bg-green-500' : 'bg-red-500'
-              }`}></span>
+            <span className="text-xs text-[#7d8590]">Status</span>
+            <span className={`flex items-center gap-1 text-xs ${systemInfo.orchestrator.status === 'online' ? 'text-[#238636]' : 'text-[#da3633]'}`}>
+              <div className={`w-2 h-2 rounded-full ${systemInfo.orchestrator.status === 'online' ? 'bg-[#238636]' : 'bg-[#da3633]'}`}></div>
               {systemInfo.orchestrator.status}
             </span>
           </div>
           <div className="flex items-center justify-between">
-            <span className="text-gray-400">Active Claudes</span>
-            <span className="text-white font-medium">{systemInfo.orchestrator.activeClaudes}</span>
+            <span className="text-xs text-[#7d8590]">Claude Instances</span>
+            <span className="text-xs text-[#e6edf3]">{systemInfo.orchestrator.activeLLMs.claude}</span>
           </div>
-          <div className="pt-2 border-t border-gray-800">
-            <div className="text-gray-400 mb-1">Queue Sizes</div>
+          <div className="flex items-center justify-between">
+            <span className="text-xs text-[#7d8590]">Other LLMs</span>
+            <span className="text-xs text-[#e6edf3]">{systemInfo.orchestrator.activeLLMs.others}</span>
+          </div>
+          <div className="pt-2 border-t border-[#30363d]">
+            <div className="text-xs text-[#7d8590] mb-2">Queues</div>
             <div className="space-y-1">
-              <div className="flex items-center justify-between text-xs">
-                <span>Action Queue</span>
-                <span className="text-blue-400">{systemInfo.orchestrator.queueSizes.action}</span>
+              <div className="flex items-center justify-between">
+                <span className="text-xs text-[#7d8590]">Action</span>
+                <span className="text-xs text-[#58a6ff]">{systemInfo.orchestrator.queueSizes.action}</span>
               </div>
-              <div className="flex items-center justify-between text-xs">
-                <span>Performance Queue</span>
-                <span className="text-purple-400">{systemInfo.orchestrator.queueSizes.performance}</span>
+              <div className="flex items-center justify-between">
+                <span className="text-xs text-[#7d8590]">Voice</span>
+                <span className="text-xs text-[#a5a5ff]">{systemInfo.orchestrator.queueSizes.voiceQueue}</span>
+              </div>
+              <div className="flex items-center justify-between">
+                <span className="text-xs text-[#7d8590]">Performance</span>
+                <span className="text-xs text-[#238636]">{systemInfo.orchestrator.queueSizes.performance}</span>
               </div>
             </div>
           </div>
@@ -88,20 +138,16 @@ export default function SystemStatus() {
       </div>
 
       {/* Monitors Status */}
-      <div className="bg-gray-900 rounded-lg shadow-xl p-4">
-        <h3 className="text-lg font-semibold mb-3 text-orange-500">Monitors</h3>
-        <div className="space-y-2">
+      <div className="bg-[#161b22] border border-[#30363d] rounded-md">
+        <div className="px-4 py-3 border-b border-[#30363d]">
+          <h3 className="text-sm font-semibold text-[#e6edf3]">Monitors</h3>
+        </div>
+        <div className="p-4 space-y-3">
           {systemInfo.monitors.map((monitor) => (
-            <div key={monitor.name} className="flex items-center justify-between text-sm">
-              <span className="text-gray-400">{monitor.name}</span>
-              <span className={`flex items-center ${
-                monitor.status === 'connected' ? 'text-green-400' : 
-                monitor.status === 'error' ? 'text-red-400' : 'text-yellow-400'
-              }`}>
-                <span className={`h-2 w-2 rounded-full mr-2 ${
-                  monitor.status === 'connected' ? 'bg-green-500 animate-pulse' : 
-                  monitor.status === 'error' ? 'bg-red-500' : 'bg-yellow-500'
-                }`}></span>
+            <div key={monitor.name} className="flex items-center justify-between">
+              <span className="text-xs text-[#7d8590]">{monitor.name}</span>
+              <span className={`flex items-center gap-1 text-xs ${monitor.status === 'connected' ? 'text-[#238636]' : 'text-[#da3633]'}`}>
+                <div className={`w-2 h-2 rounded-full ${monitor.status === 'connected' ? 'bg-[#238636]' : 'bg-[#da3633]'}`}></div>
                 {monitor.status}
               </span>
             </div>
@@ -110,23 +156,28 @@ export default function SystemStatus() {
       </div>
 
       {/* Tools Status */}
-      <div className="bg-gray-900 rounded-lg shadow-xl p-4">
-        <h3 className="text-lg font-semibold mb-3 text-orange-500">Tools</h3>
-        <div className="space-y-2">
+      <div className="bg-[#161b22] border border-[#30363d] rounded-md">
+        <div className="px-4 py-3 border-b border-[#30363d]">
+          <h3 className="text-sm font-semibold text-[#e6edf3]">Tools & Services</h3>
+        </div>
+        <div className="p-4 space-y-3">
           {systemInfo.tools.map((tool) => (
-            <div key={tool.name} className="text-sm">
+            <div key={tool.name} className="space-y-1">
               <div className="flex items-center justify-between">
-                <span className="text-gray-400">{tool.name}</span>
-                <span className={`${
-                  tool.status === 'running' ? 'text-green-400' : 'text-red-400'
+                <span className="text-xs text-[#7d8590]">{tool.name}</span>
+                <span className={`flex items-center gap-1 text-xs ${
+                  tool.status === 'running' ? 'text-[#238636]' : 
+                  tool.status === 'stopped' ? 'text-[#d29922]' : 'text-[#da3633]'
                 }`}>
+                  <div className={`w-2 h-2 rounded-full ${
+                    tool.status === 'running' ? 'bg-[#238636]' : 
+                    tool.status === 'stopped' ? 'bg-[#d29922]' : 'bg-[#da3633]'
+                  }`}></div>
                   {tool.status}
                 </span>
               </div>
               {tool.port && (
-                <div className="text-xs text-gray-500 mt-0.5">
-                  Port: {tool.port}
-                </div>
+                <div className="text-xs text-[#656d76] ml-1">:{tool.port}</div>
               )}
             </div>
           ))}

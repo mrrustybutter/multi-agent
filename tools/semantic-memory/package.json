@@ -1,0 +1,44 @@
+{
+  "name": "@semantic-memory/mcp-server",
+  "version": "1.0.0",
+  "description": "MCP server for semantic memory with vector-based search and recall",
+  "main": "dist/index.js",
+  "type": "module",
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsx src/index.ts",
+    "dev:server": "tsx src/server.ts",
+    "dev:mcp-sse": "tsx src/mcp-sse-server.ts",
+    "start": "node dist/index.js",
+    "start:server": "node dist/server.js",
+    "start:mcp-sse": "node dist/mcp-sse-server.js",
+    "clean": "rm -rf dist",
+    "test": "echo \"No tests configured\""
+  },
+  "keywords": [
+    "mcp",
+    "semantic-memory",
+    "embeddings",
+    "vector-database"
+  ],
+  "author": "Rusty Butter",
+  "license": "MIT",
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.0.3",
+    "@ai-sdk/openai": "^0.0.66",
+    "@mastra/libsql": "^0.11.2",
+    "ai": "^4.0.35",
+    "express": "^4.18.2",
+    "cors": "^2.8.5"
+  },
+  "devDependencies": {
+    "@types/node": "^24.1.0",
+    "@types/express": "^4.17.17",
+    "@types/cors": "^2.8.13",
+    "tsx": "^4.0.0",
+    "typescript": "^5.8.3"
+  },
+  "bin": {
+    "semantic-memory-mcp": "./dist/index.js"
+  }
+}

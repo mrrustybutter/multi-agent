@@ -127,8 +127,8 @@ const queueManager = new QueueManager(
 let systemStatus = {
   orchestrator: {
     status: 'offline' as 'online' | 'offline',
-    activeClaudes: 0,
-    queueSizes: { action: 0, performance: 0 }
+    activeLLMs: { claude: 0, others: 0 },
+    queueSizes: { action: 0, performance: 0, voiceQueue: 0 }
   },
   monitors: [
     { name: 'twitch-monitor', status: 'disconnected' as 'connected' | 'disconnected' },
@@ -172,9 +172,11 @@ async function updateSystemStatus() {
     if (orchestratorResponse.ok) {
       const orchestratorData = await orchestratorResponse.json() as any
       systemStatus.orchestrator.status = 'online'
-      systemStatus.orchestrator.activeClaudes = orchestratorData.activeClaudes?.length || 0
+      systemStatus.orchestrator.activeLLMs.claude = orchestratorData.activeLLMs?.claude?.length || 0
+      systemStatus.orchestrator.activeLLMs.others = orchestratorData.activeLLMs?.others?.length || 0
       systemStatus.orchestrator.queueSizes.action = orchestratorData.queueSize || 0
       systemStatus.orchestrator.queueSizes.performance = orchestratorData.queuePending || 0
+      systemStatus.orchestrator.queueSizes.voiceQueue = orchestratorData.voiceQueueSize || 0
       
       // Update MCP server status from orchestrator
       const mcpServers = orchestratorData.mcpServers || []
@@ -272,6 +274,16 @@ io.on('connection', (socket) => {
   }) => {
     logger.info(`Priority chat from ${data.user}: ${data.text}`)
 
+    // Determine if this is a code-related message or general chat
+    const isCodeRelated = /\b(code|bug|fix|debug|implement|function|class|variable|error|exception|api|database|server|deploy|build|test|typescript|javascript|python|react|node|npm|git|github|pull request|merge|commit|branch)\b/i.test(data.text) ||
+                         /[\{\}\[\]();]/.test(data.text) || // Contains code-like syntax
+                         data.text.includes('```') || // Contains code blocks
+                         /\b(how to|help me|can you)\s+(write|create|build|make|fix|debug|implement)/i.test(data.text)
+
+    const eventType = isCodeRelated ? 'chat' : 'speak'
+    
+    logger.info(`Detected message type: ${eventType} (code-related: ${isCodeRelated})`)
+
     // Create a queue message with appropriate priority
     const message: QueueMessage = {
       id: `dashboard-${Date.now()}`,
@@ -305,7 +317,7 @@ io.on('connection', (socket) => {
         },
         body: JSON.stringify({
           source: 'dashboard',
-          type: 'chat',
+          type: eventType,
           priority: data.priority === 'critical' ? 'critical' : 
                    data.priority === 'high' ? 'high' : 'medium',
           data: {
@@ -380,7 +392,8 @@ io.on('connection', (socket) => {
       const status = await response.json() as any
       
       // Create mock queue items for demonstration
-      const mockActionQueue = status.activeClaudes?.map((claude: any, idx: number) => ({
+      const activeClaudes = status.activeLLMs?.claude || []
+      const mockActionQueue = activeClaudes.map((claude: any, idx: number) => ({
         id: claude.id,
         source: 'orchestrator',
         priority: idx === 0 ? 'high' : 'medium',
@@ -413,7 +426,7 @@ io.on('connection', (socket) => {
         action: mockActionQueue,
         performance: mockPerformanceQueue,
         orchestratorStatus: {
-          activeClaudes: status.activeClaudes || [],
+          activeLLMs: status.activeLLMs || { claude: [], others: [] },
           queueSize: status.queueSize || 0,
           queuePending: status.queuePending || 0
         }
@@ -472,16 +485,17 @@ async function fetchAndBroadcastEvents() {
         action: [], // Action queue not implemented yet in orchestrator
         performance: [], // Performance queue not implemented yet in orchestrator
         orchestratorStatus: {
-          activeClaudes: status.activeClaudes || [],
+          activeLLMs: status.activeLLMs || { claude: [], others: [] },
           queueSize: status.queueSize || 0,
           queuePending: status.queuePending || 0,
           eventHistory: status.eventHistory || 0
         }
       })
 
-      // If there are active Claudes, create events for the event monitor
-      if (status.activeClaudes && status.activeClaudes.length > 0) {
-        for (const claude of status.activeClaudes) {
+      // If there are active LLMs, create events for the event monitor
+      const activeClaudes = status.activeLLMs?.claude || []
+      if (activeClaudes.length > 0) {
+        for (const claude of activeClaudes) {
           // Check if we already have this event
           const existingEvent = recentEvents.find(e => e.id === claude.eventId)
           

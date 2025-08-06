@@ -57,3 +57,41 @@
     @apply bg-background text-foreground;
   }
 }
+
+/* GitHub-style scrollbars */
+@layer utilities {
+  /* Webkit browsers (Chrome, Safari, Edge) */
+  .scrollbar-github::-webkit-scrollbar {
+    width: 8px;
+    height: 8px;
+  }
+  
+  .scrollbar-github::-webkit-scrollbar-track {
+    background: transparent;
+  }
+  
+  .scrollbar-github::-webkit-scrollbar-thumb {
+    background-color: #30363d;
+    border-radius: 4px;
+    border: 2px solid transparent;
+    background-clip: content-box;
+  }
+  
+  .scrollbar-github::-webkit-scrollbar-thumb:hover {
+    background-color: #484f58;
+  }
+  
+  /* Firefox */
+  .scrollbar-github {
+    scrollbar-width: thin;
+    scrollbar-color: #30363d transparent;
+  }
+  
+  /* Apply to all scrollable elements by default */
+  .overflow-y-auto,
+  .overflow-x-auto,
+  .overflow-auto,
+  .overflow-scroll {
+    @apply scrollbar-github;
+  }
+}

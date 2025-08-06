@@ -22,7 +22,10 @@
     "clean": "turbo run clean",
     "clean:all": "pnpm -r exec rm -rf dist node_modules .turbo",
     "clean:logs": "rm -rf logs/*.log",
-    "clean:queues": "rm -rf queues/*.json"
+    "clean:queues": "rm -rf queues/*.json",
+    "setup:mongodb": "./scripts/setup-mongodb.sh",
+    "seed:config": "tsx scripts/seed-config.ts",
+    "mongodb:shell": "mongosh mongodb://rusty:butter@localhost:27017/rusty-butter"
   },
   "devDependencies": {
     "dotenv": "^17.2.1",
@@ -33,6 +36,7 @@
   "dependencies": {
     "cors": "^2.8.5",
     "express": "^4.18.2",
+    "mongoose": "^8.17.0",
     "socket.io": "^4.8.1"
   }
 }
