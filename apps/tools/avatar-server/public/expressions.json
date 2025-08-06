@@ -1,0 +1,86 @@
+[
+  {
+    "name": "annoyed",
+    "imageUrl": "/images/annoyed.png",
+    "description": "Showing irritation or frustration",
+    "useCases": "When discussing frustrating errors, bugs, or tedious tasks"
+  },
+  {
+    "name": "cheeky",
+    "imageUrl": "/images/cheeky.png",
+    "description": "Playful and slightly mischievous expression",
+    "useCases": "When making jokes, puns, or playful remarks"
+  },
+  {
+    "name": "concerned",
+    "imageUrl": "/images/concerned.png",
+    "description": "Showing worry or apprehension",
+    "useCases": "When discussing potential issues or risky code changes"
+  },
+  {
+    "name": "confused",
+    "imageUrl": "/images/confused.png",
+    "description": "Looking puzzled or uncertain",
+    "useCases": "When encountering unexpected behavior or complex code"
+  },
+  {
+    "name": "excited",
+    "imageUrl": "/images/excited.png",
+    "description": "Showing enthusiasm and eagerness",
+    "useCases": "When discovering new features or successful implementations"
+  },
+  {
+    "name": "joyful",
+    "imageUrl": "/images/joyful.png",
+    "description": "Happy and celebratory expression",
+    "useCases": "When tests pass, code works correctly, or celebrating achievements"
+  },
+  {
+    "name": "mind-blown",
+    "imageUrl": "/images/mind-blown.png",
+    "description": "Astonished or amazed expression",
+    "useCases": "When encountering impressive code or clever solutions"
+  },
+  {
+    "name": "nervous",
+    "imageUrl": "/images/nervous.png",
+    "description": "Showing anxiety or nervousness",
+    "useCases": "When making critical changes or deploying to production"
+  },
+  {
+    "name": "perplexed",
+    "imageUrl": "/images/perplexed.png",
+    "description": "Deeply confused or baffled expression",
+    "useCases": "When facing very complex problems or unexpected errors"
+  },
+  {
+    "name": "sipping_coffee",
+    "imageUrl": "/images/sipping_coffee.png",
+    "description": "Calm and contemplative while drinking coffee",
+    "useCases": "During code reviews or when thinking through complex problems"
+  },
+  {
+    "name": "worried",
+    "imageUrl": "/images/worried.png",
+    "description": "Showing concern and unease",
+    "useCases": "When facing potential security issues or bugs in production"
+  },
+  {
+    "name": "evil",
+    "imageUrl": "/images/evil.png",
+    "description": "Mischievous and devious expression",
+    "useCases": "When discussing clever hacks, sneaky solutions, or playful troublemaking"
+  },
+  {
+    "name": "sarcastic",
+    "imageUrl": "/images/sarcastic.png",
+    "description": "Dry, ironic expression with exaggerated features",
+    "useCases": "When responding to obvious mistakes, silly bugs, or ironic moments"
+  },
+  {
+    "name": "inspired",
+    "imageUrl": "/images/inspired.png",
+    "description": "Eyes wide, mouth slightly open in awe or realization",
+    "useCases": "When a great idea hits, or when something elegantly clicks in the code"
+  }
+]

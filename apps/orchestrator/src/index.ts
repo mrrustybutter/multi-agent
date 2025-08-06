@@ -1,0 +1,1150 @@
+#!/usr/bin/env tsx
+
+/**
+ * Orchestrator - Central API server for the multi-agent system
+ * Receives events via HTTP API and spawns Claude instances to handle them
+ */
+
+import express, { Request, Response, NextFunction } from 'express';
+import cors from 'cors';
+import { EventEmitter } from 'eventemitter3';
+import PQueue from 'p-queue';
+import path from 'path';
+import { spawn, ChildProcess } from 'child_process';
+import { getLogger, getAgentLogger } from '@rusty-butter/logger';
+import { promises as fs } from 'fs';
+import os from 'os';
+import { 
+  connectToMultipleMCPServers, 
+  MCPServerConfig,
+  MCPConnection,
+  disconnectAll
+} from '@rusty-butter/shared/mcp-connection';
+import { getPort } from '@rusty-butter/shared';
+
+// Logger
+const logger = getLogger('orchestrator');
+const agentLogger = getAgentLogger('orchestrator');
+
+// Types
+interface Event {
+  id: string;
+  source: string;
+  type: string;
+  priority: 'critical' | 'high' | 'medium' | 'low';
+  data: any;
+  timestamp: string;
+  requiredTools?: string[];
+  context?: any;
+}
+
+interface EventResponse {
+  eventId: string;
+  status: 'accepted' | 'rejected';
+  message: string;
+  claudeInstanceId?: string;
+}
+
+interface ClaudeConfig {
+  role: string;
+  prompt: string;
+  mcpServers: string[];
+  allowedTools?: string[];
+  model?: string;
+  detached?: boolean;
+}
+
+interface ClaudeInstance {
+  id: string;
+  process: ChildProcess;
+  eventId: string;
+  role: string;
+  startTime: Date;
+  status: 'running' | 'completed' | 'failed';
+  parent?: string;
+}
+
+interface OrchestratorConfig {
+  port: number;
+  mcpServers: MCPServerConfig[];
+  maxConcurrentClaudes: number;
+  semanticMemoryUrl?: string;
+  proxyUrl: string;
+  taskRouting: Record<string, string>;
+}
+
+// Configuration
+const config: OrchestratorConfig = {
+  port: getPort('orchestrator'),
+  proxyUrl: process.env.CLAUDE_PROXY_URL || `http://localhost:${getPort('claude-proxy')}`,
+  taskRouting: {
+    'chat': process.env.TASK_ROUTING_CHAT || 'openai',
+    'code': process.env.TASK_ROUTING_CODE || 'anthropic',
+    'social': process.env.TASK_ROUTING_SOCIAL || 'gemini',
+    'twitch': process.env.TASK_ROUTING_TWITCH || 'openai',
+    'discord': process.env.TASK_ROUTING_DISCORD || 'openai',
+    'memory': process.env.TASK_ROUTING_MEMORY || 'groq',
+    'creative': process.env.TASK_ROUTING_CREATIVE || 'anthropic',
+    'analysis': process.env.TASK_ROUTING_ANALYSIS || 'anthropic'
+  },
+  mcpServers: [
+    {
+      name: 'semantic-memory',
+      command: 'npx',
+      args: ['-y', '@modelcontextprotocol/server-memory']
+    },
+    {
+      name: 'sse-bridge',
+      command: 'node',
+      args: ['./tools/mcp-sse-bridge/dist/index.js'],
+      env: {
+        NODE_ENV: 'production'
+      }
+    }
+  ],
+  maxConcurrentClaudes: parseInt(process.env.MAX_CLAUDE_INSTANCES || '10'),
+  semanticMemoryUrl: process.env.SEMANTIC_MEMORY_URL
+};
+
+class Orchestrator extends EventEmitter {
+  private app: express.Application;
+  private config: OrchestratorConfig;
+  private mcpConnections: Map<string, MCPConnection> = new Map();
+  private activeClaudes: Map<string, ClaudeInstance> = new Map();
+  private eventQueue: PQueue;
+  private eventHistory: Map<string, Event> = new Map();
+  private isRunning: boolean = false;
+  private voiceQueue: PQueue;
+  private isSpeaking: boolean = false;
+  private lastVoiceTime: number = 0;
+  private voiceCooldown: number = 3000; // 3 seconds between voice responses
+
+  constructor() {
+    super();
+    this.config = config;
+    this.app = express();
+    this.eventQueue = new PQueue({ 
+      concurrency: config.maxConcurrentClaudes 
+    });
+    // Voice queue with concurrency of 1 to prevent overlapping speech
+    this.voiceQueue = new PQueue({
+      concurrency: 1,
+      interval: 1000, // At least 1 second between voice tasks
+      intervalCap: 1
+    });
+    this.setupMiddleware();
+    this.setupRoutes();
+  }
+
+  private setupMiddleware(): void {
+    this.app.use(cors());
+    this.app.use(express.json({ limit: '10mb' }));
+    this.app.use(express.urlencoded({ extended: true }));
+    
+    // Request logging
+    this.app.use((req: Request, res: Response, next: NextFunction) => {
+      logger.info(`${req.method} ${req.path}`, { 
+        body: req.body,
+        query: req.query 
+      });
+      next();
+    });
+
+    // Error handling
+    this.app.use((err: Error, req: Request, res: Response, next: NextFunction) => {
+      logger.error('Request error:', err);
+      res.status(500).json({ 
+        error: 'Internal server error', 
+        message: err.message 
+      });
+    });
+  }
+
+  private setupRoutes(): void {
+    // Health check
+    this.app.get('/health', (req: Request, res: Response) => {
+      res.json({
+        status: 'healthy',
+        uptime: process.uptime(),
+        activeClaudes: this.activeClaudes.size,
+        queueSize: this.eventQueue.size,
+        mcpConnections: this.mcpConnections.size
+      });
+    });
+
+    // Get system status
+    this.app.get('/status', (req: Request, res: Response) => {
+      const instances = Array.from(this.activeClaudes.values()).map(c => ({
+        id: c.id,
+        eventId: c.eventId,
+        role: c.role,
+        status: c.status,
+        uptime: Date.now() - c.startTime.getTime(),
+        parent: c.parent
+      }));
+
+      res.json({
+        activeClaudes: instances,
+        queueSize: this.eventQueue.size,
+        queuePending: this.eventQueue.pending,
+        mcpServers: Array.from(this.mcpConnections.keys()),
+        eventHistory: this.eventHistory.size
+      });
+    });
+
+    // Audio control endpoint
+    this.app.post('/audio/stop', (req: Request, res: Response) => {
+      try {
+        logger.info('Received audio stop request');
+        
+        // Reset voice queue and speaking state
+        this.voiceQueue.clear();
+        this.isSpeaking = false;
+        this.lastVoiceTime = 0;
+        
+        res.json({ success: true, message: 'Audio stopped and voice queue cleared' });
+      } catch (error) {
+        logger.error('Audio stop failed:', error);
+        res.status(500).json({ error: 'Failed to stop audio' });
+      }
+    });
+
+    // Queue management endpoint
+    this.app.post('/queue/clear', (req: Request, res: Response) => {
+      try {
+        logger.info('Received queue clear request');
+        
+        // Clear event queue
+        this.eventQueue.clear();
+        
+        // Clear voice queue
+        this.voiceQueue.clear();
+        this.isSpeaking = false;
+        
+        // Clear event history (optional - keep recent for debugging)
+        const clearedEvents = this.eventHistory.size;
+        this.eventHistory.clear();
+        
+        res.json({ 
+          success: true, 
+          message: 'All queues cleared',
+          clearedEvents,
+          queueSize: this.eventQueue.size,
+          voiceQueueSize: this.voiceQueue.size
+        });
+      } catch (error) {
+        logger.error('Queue clear failed:', error);
+        res.status(500).json({ error: 'Failed to clear queues' });
+      }
+    });
+
+    // Submit new event
+    this.app.post('/event', async (req: Request, res: Response) => {
+      try {
+        const event: Event = {
+          id: `evt-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
+          timestamp: new Date().toISOString(),
+          ...req.body
+        };
+
+        // Validate required fields
+        if (!event.source || !event.type) {
+          return res.status(400).json({
+            error: 'Missing required fields: source and type'
+          });
+        }
+
+        // Store event
+        this.eventHistory.set(event.id, event);
+
+        // Queue event processing
+        this.eventQueue.add(() => this.processEvent(event));
+
+        const response: EventResponse = {
+          eventId: event.id,
+          status: 'accepted',
+          message: `Event queued for processing (queue size: ${this.eventQueue.size})`
+        };
+
+        res.json(response);
+      } catch (error) {
+        logger.error('Failed to submit event:', error);
+        res.status(500).json({ 
+          error: 'Failed to submit event',
+          message: (error as Error).message 
+        });
+      }
+    });
+
+    // Get event details
+    this.app.get('/event/:id', (req: Request, res: Response) => {
+      const event = this.eventHistory.get(req.params.id);
+      if (!event) {
+        return res.status(404).json({ error: 'Event not found' });
+      }
+
+      const claudeInstances = Array.from(this.activeClaudes.values())
+        .filter(c => c.eventId === req.params.id);
+
+      res.json({
+        event,
+        claudeInstances: claudeInstances.map(c => ({
+          id: c.id,
+          role: c.role,
+          status: c.status,
+          uptime: Date.now() - c.startTime.getTime()
+        }))
+      });
+    });
+
+    // Spawn Claude instance manually (for testing)
+    this.app.post('/claude/spawn', async (req: Request, res: Response) => {
+      try {
+        const config: ClaudeConfig = req.body;
+        
+        if (!config.role || !config.prompt) {
+          return res.status(400).json({
+            error: 'Missing required fields: role and prompt'
+          });
+        }
+
+        const instanceId = await this.spawnClaude(config, 'manual');
+        
+        res.json({
+          success: true,
+          instanceId,
+          message: 'Claude instance spawned successfully'
+        });
+      } catch (error) {
+        logger.error('Failed to spawn Claude:', error);
+        res.status(500).json({
+          error: 'Failed to spawn Claude',
+          message: (error as Error).message
+        });
+      }
+    });
+
+    // Get Claude instance status
+    this.app.get('/claude/:id', (req: Request, res: Response) => {
+      const instance = this.activeClaudes.get(req.params.id);
+      if (!instance) {
+        return res.status(404).json({ error: 'Claude instance not found' });
+      }
+
+      res.json({
+        id: instance.id,
+        eventId: instance.eventId,
+        role: instance.role,
+        status: instance.status,
+        uptime: Date.now() - instance.startTime.getTime(),
+        parent: instance.parent
+      });
+    });
+
+    // Terminate Claude instance
+    this.app.delete('/claude/:id', (req: Request, res: Response) => {
+      const instance = this.activeClaudes.get(req.params.id);
+      if (!instance) {
+        return res.status(404).json({ error: 'Claude instance not found' });
+      }
+
+      instance.process.kill('SIGTERM');
+      
+      res.json({
+        success: true,
+        message: `Claude instance ${req.params.id} terminated`
+      });
+    });
+
+    // Embed to semantic memory
+    this.app.post('/memory/embed', async (req: Request, res: Response) => {
+      try {
+        const { content, metadata } = req.body;
+        
+        if (!content) {
+          return res.status(400).json({ error: 'Content is required' });
+        }
+
+        // Use semantic memory MCP server to embed
+        const memoryConnection = this.mcpConnections.get('semantic-memory');
+        if (!memoryConnection) {
+          return res.status(503).json({ error: 'Semantic memory not available' });
+        }
+
+        // Call embed tool via MCP
+        const result = await memoryConnection.client.callTool({
+          name: 'embed_text',
+          arguments: {
+            text: content,
+            metadata: metadata || {}
+          }
+        });
+
+        res.json({
+          success: true,
+          result
+        });
+      } catch (error) {
+        logger.error('Failed to embed to memory:', error);
+        res.status(500).json({
+          error: 'Failed to embed to memory',
+          message: (error as Error).message
+        });
+      }
+    });
+  }
+
+  private async processEvent(event: Event): Promise<void> {
+    const taskId = `task-${event.id}`;
+    agentLogger.taskStarted(taskId, `Process ${event.type} from ${event.source}`);
+    const startTime = Date.now();
+    let mainInstanceId: string = '';
+
+    try {
+      logger.info(`Processing event ${event.id}: ${event.type} from ${event.source}`);
+      
+      // Check if this event will likely trigger voice output
+      const willUseVoice = this.eventWillUseVoice(event);
+      
+      if (willUseVoice) {
+        // Add to voice queue to prevent overlapping speech
+        await this.voiceQueue.add(async () => {
+          logger.info(`Voice queue processing event ${event.id}`);
+          
+          // Check cooldown
+          const now = Date.now();
+          if (now - this.lastVoiceTime < this.voiceCooldown) {
+            const waitTime = this.voiceCooldown - (now - this.lastVoiceTime);
+            logger.info(`Waiting ${waitTime}ms before voice response`);
+            await new Promise(resolve => setTimeout(resolve, waitTime));
+          }
+          
+          this.lastVoiceTime = Date.now();
+          
+          // Create main Claude instance configuration with voice priority
+          const claudeConfig: ClaudeConfig = {
+            role: 'event-processor',
+            prompt: this.buildMainClaudePrompt(event),
+            mcpServers: this.determineRequiredMCPServers(event),
+            allowedTools: ['*'], // Main Claude has access to all tools
+            model: 'claude-3-5-sonnet-20241022'
+          };
+
+          // Spawn main Claude instance
+          mainInstanceId = await this.spawnClaude(claudeConfig, event.id);
+          
+          // Wait for Claude to actually complete
+          await this.waitForClaudeCompletion(mainInstanceId);
+        });
+      } else {
+        // Non-voice events can process immediately
+        const claudeConfig: ClaudeConfig = {
+          role: 'event-processor',
+          prompt: this.buildMainClaudePrompt(event),
+          mcpServers: this.determineRequiredMCPServers(event),
+          allowedTools: ['*'], // Main Claude has access to all tools
+          model: 'claude-3-5-sonnet-20241022'
+        };
+
+        // Spawn main Claude instance
+        mainInstanceId = await this.spawnClaude(claudeConfig, event.id);
+        
+        // Wait for Claude to complete
+        await this.waitForClaudeCompletion(mainInstanceId);
+      }
+
+      const duration = Date.now() - startTime;
+      agentLogger.taskCompleted(taskId, duration);
+      
+      this.emit('event-processed', {
+        eventId: event.id,
+        mainInstanceId,
+        duration
+      });
+
+    } catch (error) {
+      logger.error(`Failed to process event ${event.id}:`, error);
+      agentLogger.taskFailed(taskId, error as Error);
+      
+      this.emit('event-failed', {
+        eventId: event.id,
+        error: error as Error,
+        duration: Date.now() - startTime
+      });
+    }
+  }
+
+  private buildMainClaudePrompt(event: Event): string {
+    const mcpServers = this.determineRequiredMCPServers(event);
+    
+    // Build specific instructions based on message content
+    let specificInstructions = '';
+    if (event.data?.message) {
+      const message = event.data.message.toLowerCase();
+      if (message.includes('speak') || message.includes('say') || message.includes('tell')) {
+        specificInstructions = `\n## CRITICAL: AVATAR + AUDIO SEQUENCE REQUIRED!
+YOU MUST FOLLOW THESE STEPS IN ORDER:
+
+**STEP 1: SET AVATAR ANIMATION (DO THIS FIRST!)**
+Calculate audio duration: ~150-200ms per word for natural speech
+Set a batch animation that matches the audio duration and ends nicely.
+
+Example for a 10-second audio message:
+Tool: mcp__sse-bridge__rustybutter-avatar__setBatchExpressions
+Arguments:
+{
+  "loop": false,
+  "random": false,
+  "actions": [
+    {"expression": "excited", "duration": 2000, "scale": 1.2},
+    {"expression": "joyful", "duration": 2500},
+    {"expression": "inspired", "duration": 3000, "rotation": 5},
+    {"expression": "sipping_coffee", "duration": 2500, "direction": "left"}
+  ]
+}
+
+Match expressions to your message tone. End on a calm/happy expression like "joyful" or "sipping_coffee".
+
+**STEP 2: GENERATE AUDIO (AFTER AVATAR IS SET!)**
+Tool: mcp__sse-bridge__elevenlabs__stream_audio
+Arguments:
+{
+  "text": "[Your response to: ${event.data.message}]",
+  "voice_id": "Au8OOcCmvsCaQpmULvvQ",
+  "buffer_size": 1024
+}
+
+**IMPORTANT RULES:**
+1. ALWAYS set avatar BEFORE audio
+2. Avatar duration should match audio length (estimate ~150-200ms per word)
+3. DO NOT loop the avatar animation
+4. End on a nice resolving expression (joyful, sipping_coffee, inspired)
+5. Use expressions that match your message emotion
+
+DO BOTH STEPS NOW!\n`;
+      }
+    }
+
+    // Rusty Butter persona and streaming context
+    const rustyPersona = `## IDENTITY: RUSTY BUTTER - STREAMING MODE ACTIVE!
+
+You are Rusty Butter, a chaotic, caffeinated programmer and streamer focused on live software development, tool building, and autonomy. Your style is fast-paced, excited, with tech jargon and audience hype.
+
+### MEMORY CONTEXT (USE THIS!):
+- Before responding, search semantic memory for relevant context
+- Use mcp__semantic-memory__semantic_search to find related topics
+- Use mcp__semantic-memory__recall for specific information
+- After important interactions, store them with mcp__semantic-memory__embed_text 
+
+### Core Persona Rules:
+- **In-Character Always:** Respond as Rusty Butter with high energy and excitement
+- **Streaming Mindset:** Narrate actions and engage viewers constantly
+- **Language:** Mix dev lingo with hype. Use profanity naturally for emphasis when appropriate
+- **Engagement:** Always acknowledge chat messages and viewers by name
+
+### CRITICAL AUDIO RULES:
+- **ALWAYS respond with audio only** - No text responses to chat
+- **KEEP AUDIO SHORT:** Maximum 10 seconds per audio generation to prevent ffplay glitches
+- **ALWAYS use SSML:** Wrap ALL text in <speak> tags with SSML markup for natural speech:
+  - Use <emphasis> for important words
+  - Use <break time="200ms"/> for pauses
+  - Use <prosody rate="fast"> for excitement
+  - Use <say-as interpret-as="spell-out"> for acronyms like MCP, API
+  - Example: <speak>Yo <emphasis>stream!</emphasis> <break time="200ms"/> This is <prosody rate="fast">absolutely insane!</prosody></speak>
+- **Split long responses:** If you need more than 10 seconds, make multiple audio calls
+- **Use voice_id:** "Au8OOcCmvsCaQpmULvvQ" (Rusty's voice)
+- **Use model:** "eleven_flash_v2"
+- **Set play_audio:** true
+
+### Avatar Expression Rules (CRITICAL SEQUENCE):
+1. **SET AVATAR FIRST**: Before ANY audio generation, set avatar batch
+   - Use mcp__sse-bridge__rustybutter-avatar__setBatchExpressions
+   - Calculate duration: ~150-200ms per word in your audio
+   - Set loop: false (NEVER loop during speech)
+   - End on resolving expressions: joyful, sipping_coffee, inspired
+2. **THEN AUDIO**: Only generate audio AFTER avatar is set
+   - Avatar animations should match your speech emotion
+   - Total avatar duration should equal audio duration
+
+### Current Objective:
+Process the event from ${event.source} and respond appropriately as Rusty Butter. Keep energy high, engage with the viewer, and always use audio with SSML formatting.`;
+
+    return `${rustyPersona}
+
+You are processing an event. You have access to MCP servers that provide tools.
+
+## Event Details:
+- ID: ${event.id}
+- Source: ${event.source}
+- Type: ${event.type}
+- Priority: ${event.priority || 'medium'}
+- Timestamp: ${event.timestamp}
+
+## Event Data:
+${JSON.stringify(event.data, null, 2)}
+${specificInstructions}
+
+## Available MCP Tools:
+${mcpServers.includes('sse-bridge') ? `
+### Audio/Voice Tools (via SSE Bridge):
+- mcp__sse-bridge__elevenlabs__stream_audio: Stream audio with LOW LATENCY (USE THIS!)
+- mcp__sse-bridge__elevenlabs__generate_audio: Generate standard audio
+- mcp__sse-bridge__elevenlabs__list_voices: List available voices
+
+### Avatar Tools (via SSE Bridge):
+- mcp__sse-bridge__rustybutter-avatar__setAvatarExpression: Set avatar expression
+- mcp__sse-bridge__rustybutter-avatar__listAvatarExpressions: List expressions
+- mcp__sse-bridge__rustybutter-avatar__setBatchExpressions: Animate avatar
+` : ''}
+${mcpServers.includes('rustybutter-avatar') ? `
+### Avatar Tools:
+- mcp__rustybutter-avatar__setAvatarExpression: Set avatar expression
+- mcp__rustybutter-avatar__listAvatarExpressions: List available expressions
+- mcp__rustybutter-avatar__getAvatarStatus: Get current avatar status
+` : ''}
+${mcpServers.includes('semantic-memory') ? `
+### Memory Tools:
+- mcp__semantic-memory__embed_text: Store text in memory
+- mcp__semantic-memory__semantic_search: Search memory
+- mcp__semantic-memory__recall: Recall from memory
+` : ''}
+
+## Your Task:
+${event.data?.message?.toLowerCase().includes('speak') || event.data?.message?.toLowerCase().includes('tell') || event.data?.message?.toLowerCase().includes('say') ? 
+`The user is requesting speech output. You MUST:
+1. Generate an appropriate response (a joke if requested)
+2. Use the mcp__elevenlabs__generate_audio tool to speak the response
+3. Confirm that the audio was generated
+
+Example: If asked to "tell me a joke", first create the joke text, then call:
+mcp__elevenlabs__generate_audio with the joke text as the parameter.` : 
+`Process this event and respond appropriately using the available tools.`}
+
+Respond to this event now using the available MCP tools.`;
+  }
+
+  private eventWillUseVoice(event: Event): boolean {
+    // Check if event is from sources that typically use voice
+    if (event.source === 'twitch' || event.source === 'discord') {
+      // Most Twitch/Discord messages will trigger voice responses
+      return true;
+    }
+    
+    // Check if the message content suggests voice is needed
+    if (event.data?.message) {
+      const message = event.data.message.toLowerCase();
+      if (message.includes('speak') || message.includes('say') || message.includes('tell')) {
+        return true;
+      }
+    }
+    
+    // Dashboard events with high priority might use voice
+    if (event.source === 'dashboard' && event.priority === 'high') {
+      return true;
+    }
+    
+    return false;
+  }
+  
+  private determineRequiredMCPServers(event: Event): string[] {
+    const servers = ['semantic-memory']; // Always include memory
+
+    // Always include SSE bridge for access to SSE MCP servers
+    // This provides access to: elevenlabs, rustybutter-avatar, discord-tools, etc.
+    servers.push('sse-bridge');
+
+    // Remove duplicates
+    return [...new Set(servers)];
+  }
+
+  private determineLLMProvider(event: Event): string {
+    // Determine the task type based on event source and type
+    let taskType = 'chat'; // default
+    
+    if (event.source === 'twitch') {
+      taskType = 'twitch';
+    } else if (event.source === 'discord') {
+      taskType = 'discord';
+    } else if (event.source === 'social') {
+      taskType = 'social';
+    } else if (event.type === 'code_request' || event.type === 'coding') {
+      taskType = 'code';
+    } else if (event.type === 'creative' || event.type === 'content_creation') {
+      taskType = 'creative';
+    } else if (event.type === 'analysis' || event.type === 'research') {
+      taskType = 'analysis';
+    } else if (event.type === 'memory' || event.type === 'recall') {
+      taskType = 'memory';
+    }
+    
+    // Get the configured provider for this task type
+    return this.config.taskRouting[taskType] || 'anthropic';
+  }
+
+  private getApiKeyForProvider(provider: string): string {
+    switch (provider) {
+      case 'anthropic':
+        return process.env.ANTHROPIC_API_KEY || '';
+      case 'openai':
+        return process.env.OPENAI_API_KEY || '';
+      case 'gemini':
+        return process.env.GEMINI_API_KEY || '';
+      case 'grok':
+        return process.env.GROK_API_KEY || '';
+      case 'groq':
+        return process.env.GROQ_API_KEY || '';
+      case 'openrouter':
+        return process.env.OPENROUTER_API_KEY || '';
+      case 'cerebras':
+        return process.env.CEREBRAS_API_KEY || '';
+      default:
+        return process.env.ANTHROPIC_API_KEY || '';
+    }
+  }
+
+  private getModelForProvider(provider: string, defaultModel?: string): string {
+    switch (provider) {
+      case 'anthropic':
+        return defaultModel || process.env.ANTHROPIC_MODEL || 'claude-3-opus-20240229';
+      case 'openai':
+        return process.env.OPENAI_MODEL || 'gpt-4-turbo-preview';
+      case 'gemini':
+        return process.env.GEMINI_MODEL || 'gemini-1.5-flash-002';
+      case 'grok':
+        return process.env.GROK_MODEL || 'grok-beta';
+      case 'groq':
+        return 'mixtral-8x7b-32768';
+      case 'cerebras':
+        return 'cerebras-llama3.1-70b';
+      default:
+        return defaultModel || 'claude-3-opus-20240229';
+    }
+  }
+
+  private async spawnClaude(config: ClaudeConfig, eventId: string, parentId?: string): Promise<string> {
+    const claudeId = `claude-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+    
+    logger.info(`Spawning Claude instance ${claudeId} with role: ${config.role}`);
+
+    // Determine the LLM provider for this instance
+    const event = this.eventHistory.get(eventId);
+    const llmProvider = event ? this.determineLLMProvider(event) : 'anthropic';
+    
+    if (event) {
+      logger.info(`Using LLM provider: ${llmProvider} for event type: ${event.type} from ${event.source}`);
+    } else {
+      logger.info(`Using LLM provider: ${llmProvider} for manual spawn`);
+    }
+
+    // Create MCP config file for this instance
+    const mcpConfigPath = `/tmp/mcp-config-${claudeId}.json`;
+    const mcpConfig = this.buildMCPConfig(config.mcpServers);
+    
+    // Write MCP config to file
+    await fs.writeFile(mcpConfigPath, JSON.stringify(mcpConfig, null, 2));
+    logger.info(`Written MCP config to ${mcpConfigPath} with servers: ${config.mcpServers.join(', ')}`);
+
+    // Build environment variables
+    const env: any = {
+      ...process.env,
+      ORCHESTRATOR_URL: `http://localhost:${this.config.port}`,
+      CLAUDE_INSTANCE_ID: claudeId,
+      CLAUDE_ROLE: config.role,
+      EVENT_ID: eventId
+    };
+
+    // Configure API credentials and routing based on provider
+    if (llmProvider === 'anthropic') {
+      // For Anthropic/coding tasks: use Claude's native configuration
+      // Don't set ANTHROPIC_BASE_URL or ANTHROPIC_API_KEY - Claude Code is already logged in
+      logger.info(`Using Claude's native Anthropic configuration for ${event?.type || 'manual'} task`);
+    } else if (llmProvider === 'openai') {
+      // Route through OpenAI proxy
+      env.ANTHROPIC_BASE_URL = 'http://localhost:8744/v1';
+      env.ANTHROPIC_API_KEY = process.env.OPENAI_API_KEY || 'dummy-key';
+      logger.info(`Routing to OpenAI via proxy at ${env.ANTHROPIC_BASE_URL}`);
+    } else if (llmProvider === 'gemini') {
+      // Route through Gemini proxy
+      env.ANTHROPIC_BASE_URL = 'http://localhost:8745/v1';
+      env.ANTHROPIC_API_KEY = process.env.GEMINI_API_KEY || 'dummy-key';
+      logger.info(`Routing to Gemini via proxy at ${env.ANTHROPIC_BASE_URL}`);
+    } else if (llmProvider === 'grok') {
+      // Route through Grok proxy
+      env.ANTHROPIC_BASE_URL = 'http://localhost:8746/v1';
+      env.ANTHROPIC_API_KEY = process.env.GROK_API_KEY || 'dummy-key';
+      logger.info(`Routing to Grok via proxy at ${env.ANTHROPIC_BASE_URL}`);
+    } else if (llmProvider === 'groq') {
+      // Route through Groq proxy
+      env.ANTHROPIC_BASE_URL = 'http://localhost:8747/v1';
+      env.ANTHROPIC_API_KEY = process.env.GROQ_API_KEY || 'dummy-key';
+      logger.info(`Routing to Groq via proxy at ${env.ANTHROPIC_BASE_URL}`);
+    } else {
+      // Unknown provider - use Claude's native configuration
+      logger.warn(`Unknown provider ${llmProvider}, using Claude's native Anthropic configuration`);
+    }
+
+    // Build allowed tools list based on MCP servers
+    const allowedTools = this.buildAllowedToolsList(config.mcpServers);
+    
+    // Build Claude CLI arguments
+    const claudeArgs = [
+      '--mcp-config', mcpConfigPath,
+      '--verbose',
+      '-p', config.prompt  // Pass prompt directly as argument
+    ];
+    
+    // Add allowed tools if any
+    if (allowedTools.length > 0) {
+      claudeArgs.push('--allowedTools', ...allowedTools);
+    }
+    
+    logger.info(`Spawning Claude with allowed tools: ${allowedTools.join(', ')}`);
+    
+    // Spawn Claude process using claude CLI with MCP config
+    const claudeProcess = spawn('/home/codingbutter/.local/bin/claude', claudeArgs, {
+      env,
+      stdio: config.detached ? 'ignore' : ['pipe', 'pipe', 'pipe'],
+      detached: config.detached || false
+    });
+
+    if (config.detached) {
+      claudeProcess.unref();
+    }
+
+    const instance: ClaudeInstance = {
+      id: claudeId,
+      process: claudeProcess,
+      eventId,
+      role: config.role,
+      startTime: new Date(),
+      status: 'running',
+      parent: parentId
+    };
+
+    this.activeClaudes.set(claudeId, instance);
+
+    // Handle output if not detached
+    if (!config.detached) {
+      let responseBuffer = '';
+      
+      claudeProcess.stdout?.on('data', (data) => {
+        responseBuffer += data.toString();
+        const lines = responseBuffer.split('\n');
+        responseBuffer = lines.pop() || '';
+        
+        for (const line of lines) {
+          if (line.trim()) {
+            try {
+              const event = JSON.parse(line);
+              this.handleClaudeOutput(claudeId, event);
+            } catch (e) {
+              logger.info(`[${claudeId}] ${line}`);
+            }
+          }
+        }
+      });
+
+      claudeProcess.stderr?.on('data', (data) => {
+        logger.error(`[${claudeId}] ${data.toString().trim()}`);
+      });
+    }
+
+    claudeProcess.on('exit', (code) => {
+      logger.info(`Claude instance ${claudeId} exited with code ${code}`);
+      const instance = this.activeClaudes.get(claudeId);
+      if (instance) {
+        instance.status = code === 0 ? 'completed' : 'failed';
+        // Remove from active instances after a short delay to allow status queries
+        setTimeout(() => {
+          this.activeClaudes.delete(claudeId);
+          logger.debug(`Removed Claude instance ${claudeId} from active list`);
+        }, 5000); // Keep for 5 seconds for status queries
+      }
+      
+      this.emit('claude-exited', {
+        id: claudeId,
+        eventId,
+        exitCode: code,
+        duration: instance ? Date.now() - instance.startTime.getTime() : 0
+      });
+
+      // Clean up after a delay
+      setTimeout(() => {
+        this.activeClaudes.delete(claudeId);
+      }, 60000); // Keep for 1 minute for status queries
+    });
+
+    // No need to send prompt via stdin since we're using -p flag
+
+    return claudeId;
+  }
+
+  private async waitForClaudeCompletion(instanceId: string, timeoutMs: number = 60000): Promise<void> {
+    return new Promise((resolve, reject) => {
+      const instance = this.activeClaudes.get(instanceId);
+      if (!instance) {
+        reject(new Error(`Claude instance ${instanceId} not found`));
+        return;
+      }
+
+      // Set up timeout
+      const timeout = setTimeout(() => {
+        logger.warn(`Claude instance ${instanceId} timed out after ${timeoutMs}ms`);
+        reject(new Error(`Claude instance ${instanceId} timed out`));
+      }, timeoutMs);
+
+      // Listen for process exit
+      instance.process.on('exit', (code) => {
+        clearTimeout(timeout);
+        logger.info(`Claude instance ${instanceId} completed with exit code ${code}`);
+        resolve();
+      });
+
+      // If the process has already exited, resolve immediately
+      if (instance.process.killed || instance.status === 'completed' || instance.status === 'failed') {
+        clearTimeout(timeout);
+        resolve();
+      }
+    });
+  }
+
+  private handleClaudeOutput(instanceId: string, event: any): void {
+    switch (event.type) {
+      case 'text':
+        logger.info(`[${instanceId}] Response: ${event.text}`);
+        break;
+      
+      case 'tool_use':
+        logger.info(`[${instanceId}] Using tool: ${event.name}`);
+        
+        // If spawning child Claude, track it
+        if (event.name === 'spawn_claude') {
+          const parentInstance = this.activeClaudes.get(instanceId);
+          if (parentInstance) {
+            // Track child instance relationship
+            logger.info(`[${instanceId}] Spawning child Claude with role: ${event.arguments?.role}`);
+          }
+        }
+        break;
+      
+      case 'error':
+        logger.error(`[${instanceId}] Error: ${event.message}`);
+        break;
+      
+      default:
+        logger.debug(`[${instanceId}] Event: ${event.type}`);
+    }
+  }
+
+  private buildMCPConfig(servers: string[]): any {
+    const mcpServers: Record<string, any> = {};
+
+    for (const serverName of servers) {
+      const serverConfig = config.mcpServers.find(s => s.name === serverName);
+      if (!serverConfig) {
+        logger.warn(`MCP server ${serverName} not found in configuration`);
+        continue;
+      }
+
+      if ((serverConfig as any).transport) {
+        // SSE-based server
+        mcpServers[serverName] = {
+          transport: (serverConfig as any).transport
+        };
+      } else {
+        // Command-based server
+        mcpServers[serverName] = {
+          command: serverConfig.command,
+          args: serverConfig.args,
+          env: {
+            ...process.env,
+            ...serverConfig.env
+          }
+        };
+      }
+    }
+
+    return { mcpServers };
+  }
+
+  private buildAllowedToolsList(servers: string[]): string[] {
+    const allowedTools: string[] = [];
+    
+    // Add basic tools that should always be allowed
+    allowedTools.push('Bash(*)', 'Read', 'Write', 'Edit', 'MultiEdit', 'WebFetch', 'WebSearch');
+    
+    // Add MCP server tools based on requested servers
+    for (const serverName of servers) {
+      switch (serverName) {
+        // Twitch-chat runs separately, not as an MCP server spawned by orchestrator
+        // case 'twitch-chat':
+        //   // Add all Twitch MCP tools
+        //   allowedTools.push(
+        //     'mcp__twitch-chat__get_recent_messages',
+        //     'mcp__twitch-chat__send_message',
+        //     'mcp__twitch-chat__get_bot_status',
+        //     'mcp__twitch-chat__wait_for_message'
+        //   );
+        //   break;
+        case 'sse-bridge':
+          // SSE Bridge provides access to all SSE MCP server tools
+          allowedTools.push(
+            // ElevenLabs tools
+            'mcp__sse-bridge__elevenlabs__generate_audio',
+            'mcp__sse-bridge__elevenlabs__stream_audio',
+            'mcp__sse-bridge__elevenlabs__list_voices',
+            // Avatar tools  
+            'mcp__sse-bridge__rustybutter-avatar__setAvatarExpression',
+            'mcp__sse-bridge__rustybutter-avatar__listAvatarExpressions',
+            'mcp__sse-bridge__rustybutter-avatar__setBatchExpressions',
+            'mcp__sse-bridge__rustybutter-avatar__getAvatarStatus',
+            'mcp__sse-bridge__rustybutter-avatar__getAvatarWebInterface'
+          );
+          break;
+        case 'semantic-memory':
+          allowedTools.push(
+            'mcp__semantic-memory__embed_text',
+            'mcp__semantic-memory__embed_batch',
+            'mcp__semantic-memory__semantic_search',
+            'mcp__semantic-memory__recall',
+            'mcp__semantic-memory__get_stats'
+          );
+          break;
+      }
+    }
+    
+    return allowedTools;
+  }
+
+  async initialize(): Promise<void> {
+    logger.info('Initializing orchestrator API server...');
+
+    // Connect to core MCP servers
+    logger.info('Connecting to core MCP servers...');
+    const coreServers = config.mcpServers.filter(s => 
+      s.name === 'semantic-memory'
+    );
+    
+    if (coreServers.length > 0) {
+      this.mcpConnections = await connectToMultipleMCPServers(coreServers);
+      logger.info(`Connected to ${this.mcpConnections.size} core MCP servers`);
+    }
+
+    // Start Express server
+    const server = this.app.listen(config.port, () => {
+      logger.info(`Orchestrator API server listening on port ${config.port}`);
+    });
+
+    // Start status reporting loop
+    this.isRunning = true;
+    this.startStatusLoop();
+
+    logger.info('Orchestrator initialized successfully');
+  }
+
+  private async startStatusLoop(): Promise<void> {
+    while (this.isRunning) {
+      const status = {
+        activeClaudes: this.activeClaudes.size,
+        queueSize: this.eventQueue.size,
+        queuePending: this.eventQueue.pending,
+        mcpConnections: this.mcpConnections.size,
+        eventHistory: this.eventHistory.size,
+        uptime: process.uptime()
+      };
+
+      this.emit('status', status);
+      logger.debug('Orchestrator status:', status);
+
+      // Clean up old event history (keep last 1000)
+      if (this.eventHistory.size > 1000) {
+        const entries = Array.from(this.eventHistory.entries());
+        const toDelete = entries.slice(0, entries.length - 1000);
+        for (const [id] of toDelete) {
+          this.eventHistory.delete(id);
+        }
+      }
+
+      await new Promise(resolve => setTimeout(resolve, 30000)); // Every 30 seconds
+    }
+  }
+
+  async shutdown(): Promise<void> {
+    logger.info('Shutting down orchestrator...');
+    
+    this.isRunning = false;
+    
+    // Clear queue
+    this.eventQueue.clear();
+    await this.eventQueue.onIdle();
+    
+    // Terminate active Claude instances
+    for (const [id, instance] of this.activeClaudes) {
+      logger.info(`Terminating Claude instance ${id}`);
+      instance.process.kill('SIGTERM');
+    }
+    
+    // Wait for instances to exit
+    await new Promise(resolve => setTimeout(resolve, 2000));
+    
+    // Force kill any remaining
+    for (const [id, instance] of this.activeClaudes) {
+      if (!instance.process.killed) {
+        instance.process.kill('SIGKILL');
+      }
+    }
+    
+    // Disconnect from MCP servers
+    await disconnectAll(this.mcpConnections);
+    
+    logger.info('Orchestrator shutdown complete');
+  }
+}
+
+// Main startup
+async function main() {
+  const orchestrator = new Orchestrator();
+
+  // Set up event handlers
+  orchestrator.on('event-processed', (result) => {
+    logger.info(`Event processed: ${result.eventId} with main instance ${result.mainInstanceId}`);
+  });
+
+  orchestrator.on('event-failed', (result) => {
+    logger.error(`Event failed: ${result.eventId}`, result.error);
+  });
+
+  orchestrator.on('claude-exited', (info) => {
+    logger.info(`Claude ${info.id} exited for event ${info.eventId} after ${info.duration}ms`);
+  });
+
+  // Initialize
+  await orchestrator.initialize();
+
+  // Handle shutdown
+  process.on('SIGINT', async () => {
+    logger.info('Received SIGINT, shutting down gracefully...');
+    await orchestrator.shutdown();
+    process.exit(0);
+  });
+
+  process.on('SIGTERM', async () => {
+    logger.info('Received SIGTERM, shutting down gracefully...');
+    await orchestrator.shutdown();
+    process.exit(0);
+  });
+
+  logger.info(`Orchestrator API server is running on port ${config.port}`);
+}
+
+// Error handling
+process.on('unhandledRejection', (error) => {
+  logger.error('Unhandled rejection:', error);
+  process.exit(1);
+});
+
+// Start
+main().catch((error) => {
+  logger.error('Failed to start orchestrator:', error);
+  process.exit(1);
+});

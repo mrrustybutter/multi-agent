@@ -1,0 +1,95 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "Multi-Agent System Port Configuration",
+  "description": "Centralized port configuration for all services in the multi-agent system",
+  "type": "object",
+  "properties": {
+    "core": {
+      "description": "Core orchestration services",
+      "type": "object",
+      "properties": {
+        "orchestrator": {
+          "description": "Main orchestrator API server",
+          "type": "number",
+          "default": 8742
+        },
+        "claude_proxy": {
+          "description": "Claude Code proxy server",
+          "type": "number", 
+          "default": 8743
+        },
+        "dashboard": {
+          "description": "WebSocket dashboard server",
+          "type": "number",
+          "default": 3458
+        }
+      }
+    },
+    "tools": {
+      "description": "MCP tool servers",
+      "type": "object",
+      "properties": {
+        "discord_tools": {
+          "description": "Discord automation tools MCP server",
+          "type": "number",
+          "default": 3457
+        },
+        "playwright_sse": {
+          "description": "Playwright browser automation with SSE",
+          "type": "number",
+          "default": 3456
+        }
+      }
+    },
+    "external": {
+      "description": "External service integrations",
+      "type": "object",
+      "properties": {
+        "avatar_server": {
+          "description": "RustyButter avatar HTTP server (rusty-butter project)",
+          "type": "number",
+          "default": 8080
+        },
+        "obs_websocket": {
+          "description": "OBS WebSocket connection port",
+          "type": "number",
+          "default": 4455
+        }
+      }
+    },
+    "ranges": {
+      "description": "Reserved port ranges for different service types",
+      "type": "object",
+      "properties": {
+        "core_services": {
+          "description": "Core system services (8740-8749)",
+          "start": 8740,
+          "end": 8749
+        },
+        "mcp_tools": {
+          "description": "MCP tool servers (3450-3459)",
+          "start": 3450,
+          "end": 3459
+        },
+        "external_integrations": {
+          "description": "External service integrations (8080-8089)",
+          "start": 8080,
+          "end": 8089
+        }
+      }
+    }
+  },
+  "services": {
+    "orchestrator": 8742,
+    "claude_proxy": 8743,
+    "dashboard": 3458,
+    "discord_tools": 3457,
+    "playwright_sse": 3456,
+    "avatar_server": 8080,
+    "obs_websocket": 4455,
+    "twitch_chat": 3455,
+    "elevenlabs": 3454,
+    "twitter": 3453,
+    "obs_tools": 3452
+  }
+}

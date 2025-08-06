@@ -1,0 +1,29 @@
+{
+  "name": "@rusty-butter/claude-code-proxy",
+  "version": "0.1.0",
+  "description": "Proxy server to route Claude Code instances to different LLM providers",
+  "type": "module",
+  "main": "dist/index.js",
+  "scripts": {
+    "dev": "tsx src/index.ts",
+    "build": "tsc",
+    "start": "node dist/index.js",
+    "typecheck": "tsc --noEmit",
+    "lint": "eslint src --ext .ts"
+  },
+  "dependencies": {
+    "@rusty-butter/logger": "workspace:*",
+    "cors": "^2.8.5",
+    "dotenv": "^17.2.1",
+    "express": "^4.21.2",
+    "http-proxy-middleware": "^3.0.0"
+  },
+  "devDependencies": {
+    "@types/cors": "^2.8.19",
+    "@types/express": "^4.17.23",
+    "@types/http-proxy-middleware": "^1.0.0",
+    "@types/node": "^24.2.0",
+    "tsx": "^4.7.0",
+    "typescript": "^5.9.2"
+  }
+}

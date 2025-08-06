@@ -1,7 +1,7 @@
 packages:
-  - 'packages/*'
-  - 'monitors/*'
-  - 'orchestrator'
-  - 'shared'
+  - 'apps/*'
+  - 'apps/monitors/*'
+  - 'apps/tools/*'
   - 'tools/*'
+  - 'packages/*'
   - 'config/*'

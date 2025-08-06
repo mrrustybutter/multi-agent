@@ -1,0 +1,11 @@
+{
+  "extends": "../../config/tsconfig/app.json",
+  "compilerOptions": {
+    "outDir": "./dist",
+    "rootDir": "./src",
+    "moduleResolution": "bundler",
+    "resolvePackageJsonExports": true
+  },
+  "include": ["src/**/*"],
+  "exclude": ["node_modules", "dist"]
+}

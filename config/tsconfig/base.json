@@ -14,8 +14,7 @@
     "incremental": true,
     "declaration": true,
     "declarationMap": true,
-    "sourceMap": true,
-    "types": ["node"]
+    "sourceMap": true
   },
   "exclude": [
     "node_modules",

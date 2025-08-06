@@ -1,0 +1,323 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>RustyButter Avatar</title>
+    <style>
+        body {
+            margin: 0;
+            padding: 0;
+            background: transparent;
+            font-family: Arial, sans-serif;
+            overflow: hidden;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            height: 100vh;
+        }
+        
+        #avatar-wrapper {
+            position: relative;
+            transform-origin: bottom center;
+            transition: all 0.3s ease;
+            transform: scale(0.5); /* Default size at 50% */
+        }
+        
+        .avatar-container {
+            position: relative;
+            max-width: 100vw;
+            max-height: 100vh;
+        }
+        
+        .avatar-image {
+            max-width: 100%;
+            max-height: 100%;
+            object-fit: contain;
+            filter: drop-shadow(0 10px 15px rgba(0, 0, 0, 0.4));
+            transition: transform 0.3s ease;
+        }
+        
+        .debug-info {
+            position: absolute;
+            top: 10px;
+            left: 10px;
+            background: rgba(0, 0, 0, 0.8);
+            color: white;
+            padding: 10px;
+            border-radius: 5px;
+            font-size: 12px;
+            display: none;
+            max-width: 300px;
+        }
+        
+        .debug-info.visible {
+            display: block;
+        }
+        
+        .status-indicator {
+            position: absolute;
+            top: 10px;
+            right: 10px;
+            width: 12px;
+            height: 12px;
+            border-radius: 50%;
+            background: #00ff00;
+            animation: pulse 2s infinite;
+        }
+        
+        .status-indicator.error {
+            background: #ff0000;
+        }
+        
+        @keyframes pulse {
+            0% { opacity: 1; }
+            50% { opacity: 0.5; }
+            100% { opacity: 1; }
+        }
+        
+        .flip-horizontal {
+            transform: scaleX(-1);
+        }
+        
+        /* Batch animation classes */
+        .batch-active {
+            /* Remove opacity animation - just a visual indicator class now */
+        }
+    </style>
+</head>
+<body>
+    <div id="avatar-wrapper">
+        <div class="avatar-container" id="avatarContainer">
+            <img class="avatar-image" id="avatarImage" src="/images/joyful.png" alt="Rusty Avatar">
+            <div class="status-indicator" id="statusIndicator"></div>
+            <div class="debug-info" id="debugInfo">
+            <div><strong>Expression:</strong> <span id="currentExpression">joyful</span></div>
+            <div><strong>Description:</strong> <span id="currentDescription">Loading...</span></div>
+            <div><strong>Direction:</strong> <span id="currentDirection">right</span></div>
+            <div><strong>Position:</strong> <span id="currentPosition">0, 0</span></div>
+            <div><strong>Rotation:</strong> <span id="currentRotation">0°</span></div>
+            <div><strong>Scale:</strong> <span id="currentScale">100%</span></div>
+            <div><strong>Batch:</strong> <span id="batchStatus">None</span></div>
+            <div><strong>Last Update:</strong> <span id="lastUpdate">-</span></div>
+        </div>
+        </div>
+    </div>
+
+    <script>
+        let currentBatchId = null;
+        let batchTimeout = null;
+        let currentBatchIndex = 0;
+        let debugMode = false;
+        let animationStarted = false;
+        
+        const wrapper = document.getElementById('avatar-wrapper');
+        const avatarContainer = document.getElementById('avatarContainer');
+        const avatarImage = document.getElementById('avatarImage');
+        const debugInfo = document.getElementById('debugInfo');
+        const statusIndicator = document.getElementById('statusIndicator');
+        
+        // Debug elements
+        const currentExpression = document.getElementById('currentExpression');
+        const currentDescription = document.getElementById('currentDescription');
+        const currentDirection = document.getElementById('currentDirection');
+        const currentPosition = document.getElementById('currentPosition');
+        const currentRotation = document.getElementById('currentRotation');
+        const currentScale = document.getElementById('currentScale');
+        const batchStatus = document.getElementById('batchStatus');
+        const lastUpdate = document.getElementById('lastUpdate');
+        
+        // Toggle debug mode with 'D' key
+        document.addEventListener('keydown', (e) => {
+            if (e.key.toLowerCase() === 'd') {
+                debugMode = !debugMode;
+                debugInfo.classList.toggle('visible', debugMode);
+            }
+        });
+        
+        function updateAvatar(data) {
+            try {
+                // Update image source with timestamp to prevent caching
+                const timestamp = Date.now();
+                avatarImage.src = `${data.imageUrl}?t=${timestamp}`;
+                
+                // Store the latest data for animation use
+                wrapper.dataset.direction = data.direction || 'right';
+                wrapper.dataset.rotation = data.rotation || '0';
+                wrapper.dataset.scale = data.scale || '1.0';
+                
+                // Apply direction (flipping)
+                if (data.direction === 'left') {
+                    avatarImage.style.transform = 'scaleX(-1)';
+                } else {
+                    avatarImage.style.transform = 'scaleX(1)';
+                }
+                
+                // Apply position offsets
+                if (data.posX !== undefined && data.posY !== undefined) {
+                    wrapper.style.marginLeft = `${data.posX}px`;
+                    wrapper.style.marginTop = `${data.posY}px`;
+                }
+                
+                // Update debug info
+                if (debugMode) {
+                    currentExpression.textContent = data.name || 'Unknown';
+                    currentDescription.textContent = data.description || 'No description';
+                    currentDirection.textContent = data.direction || 'right';
+                    currentPosition.textContent = `${data.posX || 0}, ${data.posY || 0}`;
+                    currentRotation.textContent = `${data.rotation || 0}°`;
+                    currentScale.textContent = `${Math.round((data.scale || 1) * 100)}%`;
+                    lastUpdate.textContent = new Date().toLocaleTimeString();
+                }
+                
+                // Update status indicator
+                statusIndicator.classList.remove('error');
+                
+            } catch (error) {
+                console.error('Error updating avatar:', error);
+                statusIndicator.classList.add('error');
+            }
+        }
+        
+        function handleBatchExpressions(batch) {
+            if (batch.batchId !== currentBatchId) {
+                currentBatchId = batch.batchId;
+                currentBatchIndex = 0;
+                
+                if (debugMode) {
+                    batchStatus.textContent = `Active (${batch.actions.length} actions, ${batch.loop ? 'looping' : 'once'}${batch.random ? ', random' : ''})`;
+                }
+                
+                processBatchAction(batch);
+            }
+        }
+        
+        function processBatchAction(batch) {
+            if (!batch.actions || batch.actions.length === 0) return;
+            
+            let actionIndex = currentBatchIndex;
+            
+            if (batch.random) {
+                actionIndex = Math.floor(Math.random() * batch.actions.length);
+            }
+            
+            const action = batch.actions[actionIndex];
+            
+            // Apply the action
+            updateAvatar({
+                name: action.expression,
+                imageUrl: `/images/${action.expression}.png`,
+                direction: action.direction,
+                posX: action.posX,
+                posY: action.posY,
+                rotation: action.rotation,
+                scale: action.scale
+            });
+            
+            // Schedule next action
+            if (batchTimeout) {
+                clearTimeout(batchTimeout);
+            }
+            
+            batchTimeout = setTimeout(() => {
+                if (batch.loop || currentBatchIndex < batch.actions.length - 1) {
+                    currentBatchIndex = (currentBatchIndex + 1) % batch.actions.length;
+                    processBatchAction(batch);
+                } else {
+                    clearBatch();
+                }
+            }, action.duration || 1000);
+        }
+        
+        function clearBatch() {
+            if (batchTimeout) {
+                clearTimeout(batchTimeout);
+                batchTimeout = null;
+            }
+            
+            currentBatchId = null;
+            currentBatchIndex = 0;
+            
+            if (debugMode) {
+                batchStatus.textContent = 'None';
+            }
+        }
+        
+        async function fetchCurrentExpression() {
+            try {
+                const response = await fetch('/api/current-expression');
+                if (!response.ok) {
+                    throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+                }
+                
+                const data = await response.json();
+                
+                // Check if we have batch expressions
+                if (data.batchExpressions) {
+                    // Only start a new batch if it's different from the current one
+                    if (data.batchExpressions.batchId !== currentBatchId) {
+                        console.log('Starting new batch:', data.batchExpressions.batchId);
+                        handleBatchExpressions(data.batchExpressions);
+                    }
+                    // Don't call updateAvatar for batch expressions - let the batch handle it
+                } else {
+                    // Clear any existing batch and update to single expression
+                    if (currentBatchId) {
+                        clearBatch();
+                    }
+                    updateAvatar(data);
+                }
+                
+            } catch (error) {
+                console.error('Failed to fetch current expression:', error);
+                statusIndicator.classList.add('error');
+                
+                if (debugMode) {
+                    lastUpdate.textContent = `Error: ${error.message}`;
+                }
+            }
+        }
+        
+        // Set up the floating animation
+        function setupFloatingAnimation() {
+            if (!animationStarted) {
+                animationStarted = true;
+                
+                // Create global animation function
+                function animateAvatar() {
+                    const time = Date.now() / 1000;
+                    
+                    // Simple sine wave for smooth floating (amplitude of 10px, period of 4 seconds)
+                    const floatOffset = Math.sin((time * Math.PI) / 2) * 10;
+                    
+                    // Get the current parameters from the dataset (updated by API calls)
+                    const rotation = parseFloat(wrapper.dataset.rotation || '0');
+                    const scale = parseFloat(wrapper.dataset.scale || '1.0');
+                    
+                    // Apply rotation, floating, and scaling (maintaining the default 0.5 scale)
+                    wrapper.style.transform = `translateY(${floatOffset}px) rotate(${rotation}deg) scale(${scale * 0.5})`;
+                    
+                    // Continue animation
+                    requestAnimationFrame(animateAvatar);
+                }
+                
+                // Start the animation loop
+                animateAvatar();
+            }
+        }
+        
+        // Set up the floating animation
+        setupFloatingAnimation();
+        
+        // Initial load
+        fetchCurrentExpression();
+        
+        // Poll for updates every 1000ms (matching rusty-butter)
+        setInterval(fetchCurrentExpression, 1000);
+        
+        // Log ready state
+        console.log('RustyButter Avatar Client initialized');
+        console.log('Press "D" to toggle debug mode');
+    </script>
+</body>
+</html>
